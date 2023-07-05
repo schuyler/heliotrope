@@ -2,9 +2,11 @@ import React, { useState, useEffect } from "react";
 import { Text, View } from "react-native";
 
 import * as Location from "expo-location";
+import { DeviceMotion } from "expo-sensors";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
+import { Rotation, transformOrientation } from "./orientation";
 
 function SolarReadout(props: {
   location: Location.LocationObject | undefined;
@@ -100,6 +102,8 @@ function Heading(props: {
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject>();
   const [heading, setHeading] = useState<Location.LocationHeadingObject>();
+  const [rotation, setRotation] = useState<Rotation>();
+
   const [_errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
@@ -115,12 +119,18 @@ export default function App() {
       setLocation(lastKnownLocation || undefined);
 
       // Start watching the device's compass heading
-      const watcher = await Location.watchHeadingAsync((heading) => {
+      const headingWatcher = await Location.watchHeadingAsync((heading) => {
         setHeading(heading);
       });
 
+      // Start watching the device's rotation
+      const motionWatcher = DeviceMotion.addListener((measurement) => {
+        const corrected = transformOrientation(measurement.rotation);
+        setRotation(corrected);
+      });
       return () => {
-        watcher.remove();
+        headingWatcher.remove();
+        motionWatcher.remove();
       };
     })();
   }, []);
@@ -129,7 +139,7 @@ export default function App() {
     <View style={styles.container}>
       <Heading heading={heading} />
       <SolarReadout location={location} heading={heading} />
-
+      <Text style={styles.paragraph}>? {rotation?.beta.toFixed(1)}º</Text>
       <Text style={styles.paragraph}>
         {location?.coords?.latitude.toFixed(4)}ºN &nbsp;
         {location?.coords?.longitude.toFixed(4)}ºE
