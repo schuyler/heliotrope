@@ -51,6 +51,52 @@ function SolarReadout(props: {
   );
 }
 
+function Heading(props: {
+  heading: Location.LocationHeadingObject | undefined;
+}) {
+  const abbreviations = [
+    "N",
+    "NNE",
+    "NE",
+    "ENE",
+    "E",
+    "ESE",
+    "SE",
+    "SSE",
+    "S",
+    "SSW",
+    "SW",
+    "WSW",
+    "W",
+    "WNW",
+    "NW",
+    "NNW",
+  ];
+  const [heading, setHeading] = useState<Location.LocationHeadingObject>();
+
+  function abbreviate(angle: number | undefined) {
+    if (angle == undefined) {
+      return "";
+    }
+    for (let point = 0; point < abbreviations.length; point++) {
+      if (angle < (point + 1) * (360 / abbreviations.length)) {
+        return abbreviations[point];
+      }
+    }
+  }
+
+  useEffect(() => {
+    setHeading(props.heading);
+  }, [props.heading]);
+
+  return (
+    <View>
+      <Text style={styles.paragraph}>{heading?.trueHeading?.toFixed(0)}º</Text>
+      <Text style={styles.paragraph}>{abbreviate(heading?.trueHeading)}</Text>
+    </View>
+  );
+}
+
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject>();
   const [heading, setHeading] = useState<Location.LocationHeadingObject>();
@@ -81,12 +127,13 @@ export default function App() {
 
   return (
     <View style={styles.container}>
+      <Heading heading={heading} />
+      <SolarReadout location={location} heading={heading} />
+
       <Text style={styles.paragraph}>
         {location?.coords?.latitude.toFixed(4)}ºN &nbsp;
         {location?.coords?.longitude.toFixed(4)}ºE
       </Text>
-      <Text style={styles.paragraph}>{heading?.trueHeading?.toFixed(0)}º</Text>
-      <SolarReadout location={location} heading={heading} />
     </View>
   );
 }
