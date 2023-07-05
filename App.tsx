@@ -69,9 +69,13 @@ export default function App() {
       setLocation(lastKnownLocation || undefined);
 
       // Start watching the device's compass heading
-      Location.watchHeadingAsync((heading) => {
+      const watcher = await Location.watchHeadingAsync((heading) => {
         setHeading(heading);
       });
+
+      return () => {
+        watcher.remove();
+      };
     })();
   }, []);
 
