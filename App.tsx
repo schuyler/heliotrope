@@ -103,6 +103,7 @@ export default function App() {
   const [location, setLocation] = useState<Location.LocationObject>();
   const [heading, setHeading] = useState<Location.LocationHeadingObject>();
   const [rotation, setRotation] = useState<Rotation>();
+  const [pitch, setPitch] = useState(0);
 
   const [_errorMsg, setErrorMsg] = useState("");
 
@@ -127,6 +128,8 @@ export default function App() {
       const motionWatcher = DeviceMotion.addListener((measurement) => {
         const corrected = transformOrientation(measurement.rotation);
         setRotation(corrected);
+        const p = true ? corrected.beta - 90 : 90 - corrected.beta;
+        setPitch(p);
       });
       return () => {
         headingWatcher.remove();
@@ -139,8 +142,12 @@ export default function App() {
     <View style={styles.container}>
       <Heading heading={heading} />
       <SolarReadout location={location} heading={heading} />
-      <Text style={styles.paragraph}>? {rotation?.beta.toFixed(1)}º</Text>
-      <Text style={styles.paragraph}>
+      <Text style={styles.paragraph}>{pitch.toFixed()}º</Text>
+      <Text style={{ ...styles.paragraph, fontSize: 24 }}>
+        ɑ={rotation?.alpha.toFixed(0)}º β={rotation?.beta.toFixed(0)}º ɣ=
+        {rotation?.gamma.toFixed(0)}º
+      </Text>
+      <Text style={{ ...styles.paragraph, fontSize: 16 }}>
         {location?.coords?.latitude.toFixed(4)}ºN &nbsp;
         {location?.coords?.longitude.toFixed(4)}ºE
       </Text>
