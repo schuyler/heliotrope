@@ -3,13 +3,16 @@ import { StyleSheet } from "react-native";
 export const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#000",
+    justifyContent: "space-evenly",
     alignItems: "center",
-    justifyContent: "space-around",
+  },
+  widget: {
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
   },
   paragraph: {
     color: "#fff",
-    fontSize: 32,
     alignItems: "center",
+    fontSize: 24,
   },
 });

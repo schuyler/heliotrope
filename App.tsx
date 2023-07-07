@@ -2,31 +2,19 @@ import React, { useState, useEffect, useRef } from "react";
 import { Text, View } from "react-native";
 
 import * as Location from "expo-location";
-import { DeviceMotion } from "expo-sensors";
+import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
 
 const halfPI = Math.PI / 2;
 
-function rotationToPitch(rotation: { beta: number; gamma: number }) {
-  const upwards = Math.abs(rotation.gamma) > halfPI;
-  const absBeta = Math.abs(rotation.beta);
-  return upwards ? halfPI - absBeta : absBeta - halfPI;
-}
-
-function adjustHeadingForPitch(heading: number, pitch: number) {
-  const adjusted = pitch < Math.PI / 4 ? heading : (heading + 180) % 360;
-  console.log("heading", heading, pitch.toFixed(3), adjusted);
-  return adjusted;
-}
-
 function toDegrees(radians: number) {
   return (radians * 180) / Math.PI;
 }
 
 function SolarReadout(props: {
-  location: Location.LocationObject | undefined;
+  location: Location.LocationObjectCoords | undefined;
   heading: number;
 }) {
   const [solarTable, setSolarTable] = useState<SolarTable>();
@@ -47,7 +35,7 @@ function SolarReadout(props: {
     if (!props.location) {
       return;
     }
-    const { latitude, longitude } = props.location.coords;
+    const { latitude, longitude } = props.location;
     const table = generateSolarTable({ latitude, longitude });
     setSolarTable(table);
   }, [props.location]);
@@ -62,7 +50,7 @@ function SolarReadout(props: {
   }, [props.heading]);
 
   return (
-    <View>
+    <View style={styles.container}>
       <Text style={styles.paragraph}>{formatTime(solarPosition?.time)}</Text>
       <Text style={styles.paragraph}>☀️ {solarPosition?.elevation}º</Text>
     </View>
@@ -94,20 +82,44 @@ function Heading(props: { heading: number }) {
   }
 
   return (
-    <View>
-      <Text style={styles.paragraph}>{props.heading.toFixed(0)}º</Text>
+    <View style={styles.container}>
       <Text style={styles.paragraph}>{abbreviate(props.heading)}</Text>
+      <Text style={styles.paragraph}>{props.heading.toFixed(0)}º</Text>
     </View>
   );
 }
 
 export default function App() {
-  const [location, setLocation] = useState<Location.LocationObject>();
-  const [heading, setHeading] = useState(0);
-  const [pitch, setPitch] = useState(0);
+  const [location, setLocation] = useState<Location.LocationObjectCoords>();
+  const [orientation, setOrientation] = useState({ heading: 0, pitch: 0 });
   const [_errorMsg, setErrorMsg] = useState("");
 
-  const pitchRef = useRef(pitch);
+  let motionReading: DeviceMotionMeasurement,
+    compassReading: Location.LocationHeadingObject,
+    previousHeading: number = -1;
+  const subscriptions: { remove: () => void }[] = [];
+
+  const updateOrientation = () => {
+    if (!motionReading || !compassReading) return;
+
+    const { beta, gamma } = motionReading.rotation;
+    const azimuth = compassReading.trueHeading;
+
+    // Make pitch be 0º at the horizon and +/- depending on up or down
+    // This math requires orientation close to portrait. Would be nice
+    // to make it more resilient to roll axis.
+    const upwards = Math.abs(gamma) > halfPI;
+    const absBeta = Math.abs(beta);
+    const pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
+
+    // For whatever reason the magnetometer flips orientation when
+    // the device pitches ~roughly~ 45º above the horizon?
+    // TODO: Make sure this doesn't flap right around 45º elevation.
+    let heading = pitch < 45 ? azimuth : (azimuth + 180) % 360;
+    previousHeading = heading;
+
+    setOrientation({ pitch, heading });
+  };
 
   useEffect(() => {
     (async () => {
@@ -119,41 +131,57 @@ export default function App() {
 
       // Get position fix (we only need it once)
       const lastKnownLocation = await Location.getLastKnownPositionAsync();
-      setLocation(lastKnownLocation || undefined);
+      setLocation(lastKnownLocation?.coords || undefined);
 
       // Start watching the device's compass heading
-      const subscriptions = [
-        await Location.watchHeadingAsync((heading) => {
-          setHeading(
-            adjustHeadingForPitch(heading.trueHeading, pitchRef.current)
-          );
-        }),
-        DeviceMotion.addListener((measurement) => {
-          setPitch(rotationToPitch(measurement.rotation));
-        }),
-      ];
-      return () => {
-        subscriptions.forEach((sub) => {
-          sub.remove();
-        });
-      };
+      subscriptions.push(
+        await Location.watchHeadingAsync((reading) => {
+          compassReading = reading;
+          updateOrientation();
+        })
+      );
     })();
+    subscriptions.push(
+      DeviceMotion.addListener((reading) => {
+        motionReading = reading;
+        updateOrientation();
+      })
+    );
+    return () => {
+      subscriptions.forEach((sub) => {
+        sub.remove();
+      });
+    };
   }, []);
-
-  useEffect(() => {
-    // Ensure the ref is always at the latest value
-    pitchRef.current = pitch;
-  }, [pitch]);
 
   return (
     <View style={styles.container}>
-      <Heading heading={heading} />
-      <SolarReadout location={location} heading={heading} />
-      <Text style={styles.paragraph}>↕️ {toDegrees(pitch).toFixed()}º</Text>
-      <Text style={{ ...styles.paragraph, fontSize: 16 }}>
-        {location?.coords?.latitude.toFixed(4)}ºN &nbsp;
-        {location?.coords?.longitude.toFixed(4)}ºE
-      </Text>
+      <View style={{ flex: 4 }}></View>
+      <View
+        style={[
+          styles.container,
+          styles.widget,
+          {
+            flexDirection: "row",
+            flexGrow: 1,
+            alignItems: "stretch",
+          },
+        ]}
+      >
+        <Heading heading={orientation.heading} />
+        <SolarReadout location={location} heading={orientation.heading} />
+        <View style={styles.container}>
+          <Text style={styles.paragraph}>
+            ↕️ {orientation.pitch.toFixed()}º
+          </Text>
+        </View>
+      </View>
+      <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
+        <Text style={{ ...styles.paragraph, fontSize: 16 }}>
+          {location?.latitude.toFixed(4)}ºN &nbsp;
+          {location?.longitude.toFixed(4)}ºE
+        </Text>
+      </View>
     </View>
   );
 }
