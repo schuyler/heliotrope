@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Text, View } from "react-native";
+import { Text, View, Dimensions } from "react-native";
+
+import Canvas from "react-native-canvas";
 
 import * as Location from "expo-location";
 import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
@@ -121,6 +123,33 @@ export default function App() {
     setOrientation({ pitch, heading });
   };
 
+  const canvasRef = useRef<Canvas | null>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const window = Dimensions.get("window");
+    canvas.height = window.height;
+    canvas.width = window.width;
+
+    ctx.fillStyle = "rgba(255, 255, 0, 1)";
+    ctx.beginPath();
+    ctx.arc(
+      canvas.width / 2,
+      canvas.height / 2,
+      canvas.width / 8,
+      0,
+      2 * Math.PI
+    );
+    ctx.fill();
+
+    return () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [canvasRef]);
+
   useEffect(() => {
     (async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
@@ -156,7 +185,15 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <View style={{ flex: 4 }}></View>
+      <Canvas
+        ref={canvasRef}
+        style={{
+          flex: 6,
+          width: "100%",
+          height: "100%",
+          backgroundColor: "#000",
+        }}
+      />
       <View
         style={[
           styles.container,
