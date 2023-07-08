@@ -12,6 +12,7 @@ export const styles = StyleSheet.create({
   },
   paragraph: {
     color: "#fff",
+    backgroundColor: "transparent",
     alignItems: "center",
     fontSize: 24,
   },

@@ -94,6 +94,7 @@ function Heading(props: { heading: number }) {
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObjectCoords>();
   const [orientation, setOrientation] = useState({ heading: 0, pitch: 0 });
+  //const [solarPosition, setSolarPosition] = useState<SolarPosition>();
   const [_errorMsg, setErrorMsg] = useState("");
 
   let motionReading: DeviceMotionMeasurement,
@@ -123,6 +124,13 @@ export default function App() {
     setOrientation({ pitch, heading });
   };
 
+  const drawSolarDisc = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+  };
+
   const canvasRef = useRef<Canvas | null>(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -134,21 +142,53 @@ export default function App() {
     canvas.height = window.height;
     canvas.width = window.width;
 
+    return () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [canvasRef]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // console.log("translate canvas");
+
+    const degPerPixel = canvas.height / 60; // assuming FOV=60º for now
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.fillStyle = "rgba(255, 255, 0, 1)";
+
     ctx.beginPath();
     ctx.arc(
-      canvas.width / 2,
-      canvas.height / 2,
+      0,
+      (orientation.pitch - 45) * degPerPixel,
       canvas.width / 8,
       0,
       2 * Math.PI
     );
     ctx.fill();
 
-    return () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    };
-  }, [canvasRef]);
+    /*
+    ctx.beginPath();
+    ctx.moveTo(-canvas.width / 2, orientation.pitch * degPerPixel);
+    ctx.lineTo(canvas.width / 2, orientation.pitch * degPerPixel);
+    ctx.stroke();
+    */
+    const horizonHeight = 5;
+    const horizonOffset = orientation.pitch * degPerPixel;
+    ctx.fillStyle = "rgba(0, 0, 255, 1)";
+    ctx.fillRect(
+      -canvas.width / 2,
+      horizonOffset - horizonHeight / 2,
+      canvas.width,
+      horizonHeight
+    );
+
+    ctx.restore();
+  }, [orientation.pitch]);
 
   useEffect(() => {
     (async () => {
