@@ -21,7 +21,7 @@ function toDegrees(radians: number) {
   return (radians * 180) / Math.PI;
 }
 
-function SolarReadout(props: { position: SolarPosition | undefined }) {
+function SolarReadout(props: { position: SolarPosition }) {
   function padTime(n: number | undefined) {
     if (n == undefined) {
       return "--";
@@ -89,7 +89,12 @@ function HeadUpDisplay(props: {
   const horizon = { y: props.orientation.pitch * degPerPixel };
 
   return (
-    <Svg width="100%" height="100%" fill="none" style={{ zIndex: 1 }}>
+    <Svg
+      width="100%"
+      height="100%"
+      fill="none"
+      style={[styles.fullScreen, { zIndex: 1 }]}
+    >
       <G transform={`translate(${width / 2} ${height / 2})`}>
         <Circle
           cx={sun.x}
@@ -102,7 +107,7 @@ function HeadUpDisplay(props: {
           y1={horizon.y}
           x2={width / 2}
           y2={horizon.y}
-          stroke="blue"
+          stroke="rgba(0,0,255,0.5)"
           strokeWidth="5"
         />
       </G>
@@ -121,8 +126,17 @@ export default function App() {
   const subscriptions: { remove: () => void }[] = [];
 
   let motionReading: DeviceMotionMeasurement,
-    compassReading: Location.LocationHeadingObject;
+    compassReading: Location.LocationHeadingObject,
+    priorOrientation: Orientation | undefined;
   let solarTable: SolarTable;
+
+  const smoothValues = (
+    prior: number,
+    next: number,
+    smoothing: number = 0.5
+  ) => {
+    return prior * smoothing + next * (1 - smoothing);
+  };
 
   const updateOrientation = () => {
     if (!motionReading || !compassReading || !solarTable) return;
@@ -135,14 +149,19 @@ export default function App() {
     // to make it more resilient to roll axis.
     const upwards = Math.abs(gamma) > halfPI;
     const absBeta = Math.abs(beta);
-    const pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
+    let pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
 
     // For whatever reason the magnetometer flips orientation when
     // the device pitches ~roughly~ 45º above the horizon?
     // TODO: Make sure this doesn't flap right around 45º elevation.
     let heading = pitch < 45 ? azimuth : (azimuth + 180) % 360;
 
+    if (priorOrientation) {
+      pitch = smoothValues(priorOrientation.pitch, pitch);
+      heading = smoothValues(priorOrientation.heading, heading);
+    }
     setOrientation({ pitch, heading });
+    priorOrientation = { pitch, heading };
 
     const tableEntry = Math.floor(heading);
     setSolarPosition(solarTable[tableEntry]);
