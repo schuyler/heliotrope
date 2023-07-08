@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "SunSector",
-    "slug": "SunSector",
+    "name": "Heliotrope",
+    "slug": "heliotrope",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -15,7 +15,8 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "info.schuyler.heliotrope"
     },
     "android": {
       "adaptiveIcon": {
@@ -25,6 +26,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "064ad6a1-06e9-46fe-ab58-0f7a027d4596"
+      }
     }
   }
 }
