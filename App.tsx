@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Text, View, Dimensions } from "react-native";
 
-import Canvas from "react-native-canvas";
+import Svg, { Circle, Line, G } from "react-native-svg";
 
 import * as Location from "expo-location";
 import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
@@ -11,6 +11,11 @@ import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
 
 const halfPI = Math.PI / 2;
+
+type Orientation = {
+  heading: number;
+  pitch: number;
+};
 
 function toDegrees(radians: number) {
   return (radians * 180) / Math.PI;
@@ -70,10 +75,48 @@ function Heading(props: { heading: number }) {
   );
 }
 
+function HeadUpDisplay(props: {
+  orientation: Orientation;
+  solarPosition: SolarPosition;
+}) {
+  const { height, width } = Dimensions.get("window");
+
+  const degPerPixel = height / 60; // assuming FOV=60º for now
+  const sun = {
+    x: 0,
+    y: (props.orientation.pitch - props.solarPosition.elevation) * degPerPixel,
+  };
+  const horizon = { y: props.orientation.pitch * degPerPixel };
+
+  return (
+    <Svg width="100%" height="100%" fill="none" style={{ zIndex: 1 }}>
+      <G transform={`translate(${width / 2} ${height / 2})`}>
+        <Circle
+          cx={sun.x}
+          cy={sun.y}
+          r={width / 8}
+          fill="rgba(255,255,0,0.5)"
+        />
+        <Line
+          x1={-width / 2}
+          y1={horizon.y}
+          x2={width / 2}
+          y2={horizon.y}
+          stroke="blue"
+          strokeWidth="5"
+        />
+      </G>
+    </Svg>
+  );
+}
+
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObjectCoords>();
   const [orientation, setOrientation] = useState({ heading: 0, pitch: 0 });
-  const [solarPosition, setSolarPosition] = useState<SolarPosition>();
+  const [solarPosition, setSolarPosition] = useState<SolarPosition>({
+    time: new Date(),
+    elevation: 0,
+  });
   const [_errorMsg, setErrorMsg] = useState("");
   const subscriptions: { remove: () => void }[] = [];
 
@@ -104,67 +147,6 @@ export default function App() {
     const tableEntry = Math.floor(heading);
     setSolarPosition(solarTable[tableEntry]);
   };
-
-  const canvasRef = useRef<Canvas | null>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const window = Dimensions.get("window");
-    canvas.height = window.height;
-    canvas.width = window.width;
-
-    return () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    };
-  }, [canvasRef]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // console.log("translate canvas");
-
-    const degPerPixel = canvas.height / 60; // assuming FOV=60º for now
-    ctx.save();
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.fillStyle = "rgba(255, 255, 0, 1)";
-
-    if (solarPosition) {
-      ctx.beginPath();
-      ctx.arc(
-        0,
-        (orientation.pitch - solarPosition.elevation) * degPerPixel,
-        canvas.width / 8,
-        0,
-        2 * Math.PI
-      );
-      ctx.fill();
-    }
-
-    /*
-    ctx.beginPath();
-    ctx.moveTo(-canvas.width / 2, orientation.pitch * degPerPixel);
-    ctx.lineTo(canvas.width / 2, orientation.pitch * degPerPixel);
-    ctx.stroke();
-    */
-    const horizonHeight = 5;
-    const horizonOffset = orientation.pitch * degPerPixel;
-    ctx.fillStyle = "rgba(0, 0, 255, 1)";
-    ctx.fillRect(
-      -canvas.width / 2,
-      horizonOffset - horizonHeight / 2,
-      canvas.width,
-      horizonHeight
-    );
-
-    ctx.restore();
-  }, [orientation.pitch]);
 
   useEffect(() => {
     (async () => {
@@ -219,7 +201,7 @@ export default function App() {
         type={CameraType.back}
         style={[styles.fullScreen, { zIndex: 0 }]}
       />
-      <Canvas ref={canvasRef} style={[styles.fullScreen, { zIndex: 1 }]} />
+      <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
       <View style={[styles.container, { flex: 6 }]} />
       <View
         style={[
