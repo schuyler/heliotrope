@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "expo": "~48.0.18",
+    "expo-camera": "^13.4.2",
     "expo-location": "^15.1.1",
     "expo-sensors": "^12.1.1",
     "expo-status-bar": "~1.4.4",
