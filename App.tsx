@@ -15,13 +15,7 @@ function toDegrees(radians: number) {
   return (radians * 180) / Math.PI;
 }
 
-function SolarReadout(props: {
-  location: Location.LocationObjectCoords | undefined;
-  heading: number;
-}) {
-  const [solarTable, setSolarTable] = useState<SolarTable>();
-  const [solarPosition, setSolarPosition] = useState<SolarPosition>();
-
+function SolarReadout(props: { position: SolarPosition | undefined }) {
   function padTime(n: number | undefined) {
     if (n == undefined) {
       return "--";
@@ -33,28 +27,12 @@ function SolarReadout(props: {
     return padTime(date?.getHours()) + ":" + padTime(date?.getMinutes());
   }
 
-  useEffect(() => {
-    if (!props.location) {
-      return;
-    }
-    const { latitude, longitude } = props.location;
-    const table = generateSolarTable({ latitude, longitude });
-    setSolarTable(table);
-  }, [props.location]);
-
-  useEffect(() => {
-    const azimuth = props.heading;
-    if (azimuth == -1 || !solarTable) {
-      return;
-    }
-    const entry = Math.floor(azimuth);
-    setSolarPosition(solarTable[entry]);
-  }, [props.heading]);
-
   return (
     <View style={styles.container}>
-      <Text style={styles.paragraph}>{formatTime(solarPosition?.time)}</Text>
-      <Text style={styles.paragraph}>☀️ {solarPosition?.elevation}º</Text>
+      <Text style={styles.paragraph}>{formatTime(props.position?.time)}</Text>
+      <Text style={styles.paragraph}>
+        ☀️ {props.position?.elevation || "--"}º
+      </Text>
     </View>
   );
 }
@@ -94,16 +72,16 @@ function Heading(props: { heading: number }) {
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObjectCoords>();
   const [orientation, setOrientation] = useState({ heading: 0, pitch: 0 });
-  //const [solarPosition, setSolarPosition] = useState<SolarPosition>();
+  const [solarPosition, setSolarPosition] = useState<SolarPosition>();
   const [_errorMsg, setErrorMsg] = useState("");
-
-  let motionReading: DeviceMotionMeasurement,
-    compassReading: Location.LocationHeadingObject,
-    previousHeading: number = -1;
   const subscriptions: { remove: () => void }[] = [];
 
+  let motionReading: DeviceMotionMeasurement,
+    compassReading: Location.LocationHeadingObject;
+  let solarTable: SolarTable;
+
   const updateOrientation = () => {
-    if (!motionReading || !compassReading) return;
+    if (!motionReading || !compassReading || !solarTable) return;
 
     const { beta, gamma } = motionReading.rotation;
     const azimuth = compassReading.trueHeading;
@@ -119,16 +97,11 @@ export default function App() {
     // the device pitches ~roughly~ 45º above the horizon?
     // TODO: Make sure this doesn't flap right around 45º elevation.
     let heading = pitch < 45 ? azimuth : (azimuth + 180) % 360;
-    previousHeading = heading;
 
     setOrientation({ pitch, heading });
-  };
 
-  const drawSolarDisc = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const tableEntry = Math.floor(heading);
+    setSolarPosition(solarTable[tableEntry]);
   };
 
   const canvasRef = useRef<Canvas | null>(null);
@@ -161,15 +134,17 @@ export default function App() {
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.fillStyle = "rgba(255, 255, 0, 1)";
 
-    ctx.beginPath();
-    ctx.arc(
-      0,
-      (orientation.pitch - 45) * degPerPixel,
-      canvas.width / 8,
-      0,
-      2 * Math.PI
-    );
-    ctx.fill();
+    if (solarPosition) {
+      ctx.beginPath();
+      ctx.arc(
+        0,
+        (orientation.pitch - solarPosition.elevation) * degPerPixel,
+        canvas.width / 8,
+        0,
+        2 * Math.PI
+      );
+      ctx.fill();
+    }
 
     /*
     ctx.beginPath();
@@ -200,7 +175,14 @@ export default function App() {
 
       // Get position fix (we only need it once)
       const lastKnownLocation = await Location.getLastKnownPositionAsync();
-      setLocation(lastKnownLocation?.coords || undefined);
+      if (!lastKnownLocation) {
+        setErrorMsg("Can't determine last known location");
+        return;
+      }
+      setLocation(lastKnownLocation.coords);
+      if (!solarTable) {
+        solarTable = generateSolarTable(lastKnownLocation.coords);
+      }
 
       // Start watching the device's compass heading
       subscriptions.push(
@@ -246,7 +228,7 @@ export default function App() {
         ]}
       >
         <Heading heading={orientation.heading} />
-        <SolarReadout location={location} heading={orientation.heading} />
+        <SolarReadout position={solarPosition} />
         <View style={styles.container}>
           <Text style={styles.paragraph}>
             ↕️ {orientation.pitch.toFixed()}º
