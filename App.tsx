@@ -5,6 +5,7 @@ import Canvas from "react-native-canvas";
 
 import * as Location from "expo-location";
 import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
+import { Camera, CameraType } from "expo-camera";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
@@ -167,10 +168,17 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
+      const locationPerms = await Location.requestForegroundPermissionsAsync();
+      if (locationPerms.status !== "granted") {
         setErrorMsg("Permission to access location was denied");
+        console.log("Location permission denied");
         return;
+      }
+
+      const cameraPerms = await Camera.requestCameraPermissionsAsync();
+      if (cameraPerms.status !== "granted") {
+        setErrorMsg("Permission to access camera was denied");
+        console.log("Camera permission denied");
       }
 
       // Get position fix (we only need it once)
@@ -207,15 +215,12 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <Canvas
-        ref={canvasRef}
-        style={{
-          flex: 6,
-          width: "100%",
-          height: "100%",
-          backgroundColor: "#000",
-        }}
+      <Camera
+        type={CameraType.back}
+        style={[styles.fullScreen, { zIndex: 0 }]}
       />
+      <Canvas ref={canvasRef} style={[styles.fullScreen, { zIndex: 1 }]} />
+      <View style={[styles.container, { flex: 6 }]} />
       <View
         style={[
           styles.container,
