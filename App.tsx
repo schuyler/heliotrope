@@ -1,7 +1,13 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Text, View, Dimensions } from "react-native";
+import React, { useState, useEffect } from "react";
+import { Text, View, Dimensions, Image } from "react-native";
 
-import Svg, { Circle, Line, G } from "react-native-svg";
+import Svg, {
+  Circle,
+  Line,
+  G,
+  Text as SvgText,
+  SvgUri,
+} from "react-native-svg";
 
 import * as Location from "expo-location";
 import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
@@ -28,29 +34,34 @@ function toDegrees(radians: number) {
   return (radians * 180) / Math.PI;
 }
 
-function SolarReadout(props: { position: SolarPosition }) {
-  function padTime(n: number | undefined) {
-    if (n == undefined) {
-      return "--";
-    }
-    return n.toString().padStart(2, "0");
+function padTime(n: number | undefined) {
+  if (n == undefined) {
+    return "--";
   }
+  return n.toString().padStart(2, "0");
+}
 
-  function formatTime(date: Date | undefined) {
-    return padTime(date?.getHours()) + ":" + padTime(date?.getMinutes());
-  }
+function formatTime(date: Date | undefined) {
+  return padTime(date?.getHours()) + ":" + padTime(date?.getMinutes());
+}
 
+function SolarTime(props: { position: SolarPosition; style?: object }) {
   return (
-    <View style={styles.container}>
-      <Text style={styles.paragraph}>{formatTime(props.position?.time)}</Text>
-      <Text style={styles.paragraph}>
-        ☀️ {props.position?.elevation || "--"}º
-      </Text>
-    </View>
+    <Text style={[styles.paragraph, props.style]}>
+      {formatTime(props.position?.time)}
+    </Text>
   );
 }
 
-function Heading(props: { heading: number }) {
+function SolarElevation(props: { position: SolarPosition; style?: object }) {
+  return (
+    <Text style={[styles.paragraph, props.style]}>
+      ☀️ {props.position?.elevation || "--"}º
+    </Text>
+  );
+}
+
+function CompassPoint(props: { heading: number; style?: object }) {
   const abbreviations = [
     "N",
     "NNE",
@@ -73,12 +84,18 @@ function Heading(props: { heading: number }) {
   function abbreviate(angle: number) {
     return abbreviations[Math.floor(angle / (360 / abbreviations.length))];
   }
-
   return (
-    <View style={styles.container}>
-      <Text style={styles.paragraph}>{abbreviate(props.heading)}</Text>
-      <Text style={styles.paragraph}>{props.heading.toFixed(0)}º</Text>
-    </View>
+    <Text style={[styles.paragraph, props.style]}>
+      {abbreviate(props.heading)}
+    </Text>
+  );
+}
+
+function Heading(props: { heading: number; style?: object }) {
+  return (
+    <Text style={[styles.paragraph, props.style]}>
+      {props.heading.toFixed(0)}º
+    </Text>
   );
 }
 
@@ -95,6 +112,7 @@ function HeadUpDisplay(props: {
   };
   const horizon = { y: props.orientation.pitch * degPerPixel };
 
+  const Arrow = require("./assets/arrow.svg");
   return (
     <Svg
       width="100%"
@@ -114,8 +132,33 @@ function HeadUpDisplay(props: {
           y1={horizon.y}
           x2={width / 2}
           y2={horizon.y}
-          stroke="rgba(0,0,255,0.5)"
+          stroke="rgba(255,255,255,0.5)"
           strokeWidth="5"
+        />
+        <SvgText
+          x={sun.x}
+          y={sun.y + width / 8 + 32}
+          textAnchor="middle"
+          stroke={"rgb(255,255,255)"}
+          fill={"rgb(255,255,255)"}
+          fontSize={32}
+          fontFamily="Baskerville"
+          fontWeight="bold"
+        >
+          {formatTime(props.solarPosition.time)}
+        </SvgText>
+      </G>
+      <G
+        transform={`translate(${(width * 3) / 8} ${
+          height / 2 + height / 8
+        }) scale(1,-1)`}
+      >
+        <SvgUri
+          uri={Image.resolveAssetSource(Arrow).uri}
+          width={width / 4}
+          height={height / 4}
+          stroke={"rgba(0,0,0,0.25)"}
+          fill={"rgba(255,255,255,0.5)"}
         />
       </G>
     </Svg>
@@ -235,7 +278,7 @@ export default function App() {
         ""
       )}
       <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
-      <View style={[styles.container, { flex: 6 }]} />
+      <View style={[styles.container, { flex: 7 }]} />
       <View
         style={[
           styles.container,
@@ -247,20 +290,31 @@ export default function App() {
           },
         ]}
       >
-        <Heading heading={orientation.heading} />
-        <SolarReadout position={solarPosition} />
+        <View style={styles.container}>
+          <CompassPoint
+            heading={orientation.heading}
+            style={{ fontSize: 32, fontFamily: "Baskerville" }}
+          />
+          {/*
+          <SolarTime position={solarPosition} style={{ fontSize: 32 }} />
+          <SolarElevation position={solarPosition} style={{ fontSize: 16 }} />
+          */}
+        </View>
+        {/*}
         <View style={styles.container}>
           <Text style={styles.paragraph}>
             ↕️ {orientation.pitch.toFixed()}º
           </Text>
-        </View>
+        </View>*/}
       </View>
+      {/*
       <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
         <Text style={{ ...styles.paragraph, fontSize: 16 }}>
           {location?.latitude.toFixed(4)}ºN &nbsp;
           {location?.longitude.toFixed(4)}ºE
         </Text>
       </View>
+      */}
     </View>
   );
 }
