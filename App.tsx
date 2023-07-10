@@ -10,6 +10,13 @@ import { Camera, CameraType } from "expo-camera";
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
 
+import { LogBox } from "react-native";
+
+// Some bug in Expo
+LogBox.ignoreLogs([
+  `Constants.platform.ios.model has been deprecated in favor of expo-device's Device.modelName property. This API will be removed in SDK 45.`,
+]);
+
 const halfPI = Math.PI / 2;
 
 type Orientation = {
@@ -123,6 +130,7 @@ export default function App() {
     elevation: 0,
   });
   const [_errorMsg, setErrorMsg] = useState("");
+  const [cameraReady, setCameraReady] = useState(false);
   const subscriptions: { remove: () => void }[] = [];
 
   let motionReading: DeviceMotionMeasurement,
@@ -177,7 +185,9 @@ export default function App() {
       }
 
       const cameraPerms = await Camera.requestCameraPermissionsAsync();
-      if (cameraPerms.status !== "granted") {
+      if (cameraPerms.status === "granted") {
+        setCameraReady(true);
+      } else {
         setErrorMsg("Permission to access camera was denied");
         console.log("Camera permission denied");
       }
@@ -216,10 +226,14 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <Camera
-        type={CameraType.back}
-        style={[styles.fullScreen, { zIndex: 0 }]}
-      />
+      {cameraReady ? (
+        <Camera
+          type={CameraType.back}
+          style={[styles.fullScreen, { zIndex: 0 }]}
+        />
+      ) : (
+        ""
+      )}
       <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
       <View style={[styles.container, { flex: 6 }]} />
       <View
