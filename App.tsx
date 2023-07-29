@@ -104,13 +104,26 @@ function HeadUpDisplay(props: {
   solarPosition: SolarPosition;
 }) {
   const { height, width } = Dimensions.get("window");
+  const iconSize = width / 8;
+  const textSize = 32;
 
   const degPerPixel = height / 60; // assuming FOV=60º for now
+  const relativeElevation =
+    props.orientation.pitch - props.solarPosition.elevation;
   const sun = {
     x: 0,
-    y: (props.orientation.pitch - props.solarPosition.elevation) * degPerPixel,
+    y: relativeElevation * degPerPixel,
   };
   const horizon = { y: props.orientation.pitch * degPerPixel };
+
+  const isSunVisible =
+    sun.y > height / 2 + iconSize || sun.y + iconSize + textSize < -height / 2;
+  const arrowTransform =
+    sun.y < 0
+      ? `translate(${
+          width / 2 - iconSize
+        } ${iconSize}) rotate(180 ${iconSize} ${iconSize})`
+      : `translate(${width / 2 - iconSize} ${(height * 3) / 4 - iconSize})`;
 
   const Arrow = require("./assets/arrow.svg");
   return (
@@ -121,12 +134,7 @@ function HeadUpDisplay(props: {
       style={[styles.fullScreen, { zIndex: 1 }]}
     >
       <G transform={`translate(${width / 2} ${height / 2})`}>
-        <Circle
-          cx={sun.x}
-          cy={sun.y}
-          r={width / 8}
-          fill="rgba(255,255,0,0.5)"
-        />
+        <Circle cx={sun.x} cy={sun.y} r={iconSize} fill="rgba(255,255,0,0.5)" />
         <Line
           x1={-width / 2}
           y1={horizon.y}
@@ -137,30 +145,30 @@ function HeadUpDisplay(props: {
         />
         <SvgText
           x={sun.x}
-          y={sun.y + width / 8 + 32}
+          y={sun.y + iconSize + textSize}
           textAnchor="middle"
           stroke={"rgb(255,255,255)"}
           fill={"rgb(255,255,255)"}
-          fontSize={32}
+          fontSize={textSize}
           fontFamily="Baskerville"
           fontWeight="bold"
         >
           {formatTime(props.solarPosition.time)}
         </SvgText>
       </G>
-      <G
-        transform={`translate(${(width * 3) / 8} ${
-          height / 2 + height / 8
-        }) scale(1,-1)`}
-      >
-        <SvgUri
-          uri={Image.resolveAssetSource(Arrow).uri}
-          width={width / 4}
-          height={height / 4}
-          stroke={"rgba(0,0,0,0.25)"}
-          fill={"rgba(255,255,255,0.5)"}
-        />
-      </G>
+      {isSunVisible ? (
+        <G transform={arrowTransform}>
+          <SvgUri
+            uri={Image.resolveAssetSource(Arrow).uri}
+            width={width / 4}
+            height={width / 4}
+            stroke={"rgba(0,0,0,0.5)"}
+            fill={"rgba(255,255,255,0.25)"}
+          />
+        </G>
+      ) : (
+        ""
+      )}
     </Svg>
   );
 }
