@@ -11,7 +11,7 @@ import Svg, {
 
 import * as Location from "expo-location";
 import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
-import { Camera, CameraType } from "expo-camera";
+import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
@@ -181,7 +181,7 @@ export default function App() {
     elevation: 0,
   });
   const [_errorMsg, setErrorMsg] = useState("");
-  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraPermission, requestCameraPermissions] = useCameraPermissions();
   const subscriptions: { remove: () => void }[] = [];
 
   let motionReading: DeviceMotionMeasurement,
@@ -189,10 +189,11 @@ export default function App() {
     priorOrientation: Orientation | undefined;
   let solarTable: SolarTable;
 
+  const updateInterval = 25; // ms
   const smoothValues = (
     prior: number,
     next: number,
-    smoothing: number = 0.5
+    smoothing: number = 0.1
   ) => {
     return prior * smoothing + next * (1 - smoothing);
   };
@@ -228,19 +229,13 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      requestCameraPermissions();
+
       const locationPerms = await Location.requestForegroundPermissionsAsync();
       if (locationPerms.status !== "granted") {
         setErrorMsg("Permission to access location was denied");
         console.log("Location permission denied");
         return;
-      }
-
-      const cameraPerms = await Camera.requestCameraPermissionsAsync();
-      if (cameraPerms.status === "granted") {
-        setCameraReady(true);
-      } else {
-        setErrorMsg("Permission to access camera was denied");
-        console.log("Camera permission denied");
       }
 
       // Get position fix (we only need it once)
@@ -257,17 +252,30 @@ export default function App() {
       // Start watching the device's compass heading
       subscriptions.push(
         await Location.watchHeadingAsync((reading) => {
-          compassReading = reading;
+          // Only register high accuracy readings
+          if (reading.accuracy == 3) { // 3 is the highest
+            compassReading = reading;
+          }
+        })
+      );
+      DeviceMotion.setUpdateInterval(updateInterval);
+
+      const motionPerms = await DeviceMotion.requestPermissionsAsync();
+      if (motionPerms.status !== "granted") {
+        setErrorMsg("Permission to access motion sensors was denied");
+        console.log("Device motion permission denied");
+        return;
+      }
+      // Start watching the device's motion
+      subscriptions.push(
+        DeviceMotion.addListener((reading) => {
+          motionReading = reading;
           updateOrientation();
         })
       );
+      DeviceMotion.setUpdateInterval(updateInterval);
     })();
-    subscriptions.push(
-      DeviceMotion.addListener((reading) => {
-        motionReading = reading;
-        updateOrientation();
-      })
-    );
+
     return () => {
       subscriptions.forEach((sub) => {
         sub.remove();
@@ -277,9 +285,9 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      {cameraReady ? (
-        <Camera
-          type={CameraType.back}
+      {cameraPermission?.granted ? (
+        <CameraView
+          facing="back"
           style={[styles.fullScreen, { zIndex: 0 }]}
         />
       ) : (
