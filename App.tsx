@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Text, View, Dimensions, Image } from "react-native";
 
 import Svg, {
@@ -11,7 +11,7 @@ import Svg, {
 
 import * as Location from "expo-location";
 import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
-import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
+import { CameraView, useCameraPermissions } from "expo-camera";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
@@ -190,41 +190,87 @@ export default function App() {
   let solarTable: SolarTable;
 
   const updateInterval = 25; // ms
+
   const smoothValues = (
     prior: number,
     next: number,
-    smoothing: number = 0.1
+    smoothing: number = 0.2
   ) => {
+    // If next and prior are really far apart, wrap them around
+    if (next > prior + 180) next -= 360;
+    if (next < prior - 180) next += 360;
     return prior * smoothing + next * (1 - smoothing);
   };
 
+  /*
+  // Constants for heading smoothing -- currently unused
+  const LOWER_THRESHOLD = 40;
+  const UPPER_THRESHOLD = 50;
+  const lastHeading = useRef(0);
+  const lastUpdateTime = useRef(Date.now());
+  */
+
   const updateOrientation = () => {
     if (!motionReading || !compassReading || !solarTable) return;
-
+    
+    // Calculate pitch
     const { beta, gamma } = motionReading.rotation;
-    const azimuth = compassReading.trueHeading;
-
-    // Make pitch be 0º at the horizon and +/- depending on up or down
-    // This math requires orientation close to portrait. Would be nice
-    // to make it more resilient to roll axis.
     const upwards = Math.abs(gamma) > halfPI;
     const absBeta = Math.abs(beta);
     let pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
+    
+    // Calculate heading. Flip the compass reading if the pitch is > 45º,
+    // since the iPhone flips the compass values at that pitch.
+    const azimuth = compassReading.trueHeading;
+    let heading = pitch > 45 ? (azimuth + 180) % 360 : azimuth;
 
-    // For whatever reason the magnetometer flips orientation when
-    // the device pitches ~roughly~ 45º above the horizon?
-    // TODO: Make sure this doesn't flap right around 45º elevation.
-    let heading = pitch < 45 ? azimuth : (azimuth + 180) % 360;
+    /*
+    // This entire block of code is meant to create a dead zone for the
+    // heading due to iPhone flipping compass values at 45º of pitch.
+    // Turns out using the gyros to integrate the rotation rate is...
+    // a little jittery, and maybe not necesssary, since this function
+    // is only called when DeviceMotion updates and the logic above seems
+    // to work ok.
 
+    // Calculdate time delta
+    const now = Date.now();
+    const deltaT = (now - lastUpdateTime.current) / 1000;
+    lastUpdateTime.current = now;
+
+    // Determine heading based on pitch zone
+    const rotationRate = motionReading.rotationRate?.alpha || 0;
+    let heading;
+    if (pitch < LOWER_THRESHOLD) {
+      // Trust compass directly
+      heading = azimuth;
+      lastHeading.current = heading;
+    } else if (pitch > UPPER_THRESHOLD) {
+      // Trust flipped compass
+      heading = (azimuth + 180) % 360;
+      lastHeading.current = heading;
+    } else {
+      // Use gyroscope in dead zone
+      const rotationDegrees = toDegrees(rotationRate) * deltaT;
+      heading = (lastHeading.current - rotationDegrees + 360) % 360;
+      lastHeading.current = heading;
+    }
+    */
+    // Apply smoothing
     if (priorOrientation) {
       pitch = smoothValues(priorOrientation.pitch, pitch);
       heading = smoothValues(priorOrientation.heading, heading);
+      // If heading is negative after smoothing, we moved counterclockwise
+      // past due north, so wrap around
+      if (heading >= 0) {
+        heading = heading % 360
+      } else {
+        heading = (heading + 360) % 360;
+      }
     }
-    setOrientation({ pitch, heading });
     priorOrientation = { pitch, heading };
 
-    const tableEntry = Math.floor(heading);
-    setSolarPosition(solarTable[tableEntry]);
+    setOrientation({ pitch, heading });
+    setSolarPosition(solarTable[Math.floor(heading)]);
   };
 
   useEffect(() => {
@@ -316,12 +362,13 @@ export default function App() {
           <SolarElevation position={solarPosition} style={{ fontSize: 16 }} />
           */}
         </View>
-        {/*}
+      {/*
         <View style={styles.container}>
-          <Text style={styles.paragraph}>
+          <Text style={{...styles.paragraph, fontSize: 16}}>
             ↕️ {orientation.pitch.toFixed()}º
           </Text>
-        </View>*/}
+        </View>
+      */}
       </View>
       {/*
       <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
