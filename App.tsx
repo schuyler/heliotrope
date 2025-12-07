@@ -24,6 +24,7 @@ import {
   Orientation as AHRSOrientation,
   SensorReading,
   hasAllSensorReadings,
+  isValidSensorReading,
 } from "./ahrs-orientation";
 
 import { LogBox } from "react-native";
@@ -203,6 +204,10 @@ export default function App() {
   // AHRS filter ref
   const madgwickRef = useRef<Madgwick | null>(null);
 
+  // AHRS failure detection
+  const ahrsFailureCountRef = useRef<number>(0);
+  const MAX_AHRS_FAILURES = 10;
+
   // Initialize Madgwick filter on first render
   if (!madgwickRef.current) {
     madgwickRef.current = new Madgwick({
@@ -222,8 +227,16 @@ export default function App() {
     const solarTable = solarTableRef.current;
     const madgwick = madgwickRef.current;
 
-    // Wait until we have all three sensor readings and solar table
-    if (!hasAllSensorReadings(gyro, accel, mag) || !solarTable || !madgwick) {
+    // Wait until we have all three sensor readings and filter is ready
+    if (!hasAllSensorReadings(gyro, accel, mag) || !madgwick) {
+      return;
+    }
+
+    // Validate sensor data to prevent NaN/Infinity from corrupting AHRS
+    if (!isValidSensorReading(gyro) ||
+        !isValidSensorReading(accel) ||
+        !isValidSensorReading(mag)) {
+      console.warn("Invalid sensor reading detected, skipping AHRS update");
       return;
     }
 
@@ -238,8 +251,33 @@ export default function App() {
     // Get Euler angles from AHRS
     const euler = madgwick.getEulerAngles();
 
-    // Convert to degrees and apply coordinate system adjustments
-    // Note: May need to adjust signs/offsets based on device testing
+    // Validate Euler angles - filter can produce NaN if corrupted
+    if (!Number.isFinite(euler.heading) ||
+        !Number.isFinite(euler.pitch) ||
+        !Number.isFinite(euler.roll)) {
+      ahrsFailureCountRef.current++;
+      console.error("AHRS produced invalid angles:", euler,
+        `(failure ${ahrsFailureCountRef.current}/${MAX_AHRS_FAILURES})`);
+
+      // If too many failures, reset the filter
+      if (ahrsFailureCountRef.current >= MAX_AHRS_FAILURES) {
+        console.error("AHRS filter appears stuck, resetting...");
+        madgwickRef.current = new Madgwick({
+          sampleInterval: AHRS_SAMPLE_INTERVAL,
+          beta: AHRS_BETA,
+        });
+        ahrsFailureCountRef.current = 0;
+      }
+      return;
+    }
+
+    // Reset failure counter on successful update
+    ahrsFailureCountRef.current = 0;
+
+    // Convert to degrees
+    // COORDINATE SYSTEM NOTE: The AHRS library expects X=North, Y=East, Z=Down.
+    // Expo sensors may use different conventions. If heading is 180° off or
+    // pitch is inverted, adjust the signs/offsets here after device testing.
     let heading = euler.heading * (180 / Math.PI);
     let pitch = euler.pitch * (180 / Math.PI);
     let roll = euler.roll * (180 / Math.PI);
@@ -257,7 +295,12 @@ export default function App() {
 
     priorOrientationRef.current = newOrientation;
     setOrientation(newOrientation);
-    setSolarPosition(solarTable[Math.floor(newOrientation.heading)]);
+
+    // Update solar position if solar table is available (optional)
+    if (solarTable) {
+      const headingIndex = Math.floor(newOrientation.heading) % 360;
+      setSolarPosition(solarTable[headingIndex]);
+    }
   };
 
   useEffect(() => {
