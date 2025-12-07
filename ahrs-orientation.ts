@@ -97,11 +97,12 @@ export function convertEulerToOrientation(
 
 /**
  * Smooths an entire orientation, handling heading wraparound.
+ * Heading is normalized to [0, 360) and pitch is clamped to [-90, 90].
  *
  * @param prior - Previous orientation
  * @param next - New orientation
  * @param smoothing - Smoothing factor (0-1)
- * @returns Smoothed orientation
+ * @returns Smoothed orientation with normalized heading and clamped pitch
  */
 export function smoothOrientation(
   prior: Orientation,
@@ -110,7 +111,7 @@ export function smoothOrientation(
 ): Orientation {
   return {
     heading: normalizeHeading(smoothValue(prior.heading, next.heading, smoothing)),
-    pitch: smoothValue(prior.pitch, next.pitch, smoothing),
+    pitch: clampPitch(smoothValue(prior.pitch, next.pitch, smoothing)),
     roll: smoothValue(prior.roll, next.roll, smoothing),
   };
 }

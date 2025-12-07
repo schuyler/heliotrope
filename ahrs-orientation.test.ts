@@ -27,22 +27,19 @@ describe('smoothValue', () => {
   });
 
   it('should handle wraparound from 350° to 10° (crossing north going east)', () => {
-    // 10 becomes 10 - 360 = -350 (since 10 < 350 - 180)
-    // result = 350 * 0.2 + (-350) * 0.8 = 70 - 280 = -210... wait that's wrong
-    // Let me recalculate: prior=350, next=10
-    // next < prior - 180? 10 < 350 - 180 = 170? Yes, so next += 360 -> next = 370
-    // result = 350 * 0.2 + 370 * 0.8 = 70 + 296 = 366
-    // Hmm, but we don't normalize in smoothValue. Let's check...
-    const result = smoothValue(350, 10, 0.2);
+    // When next (10) is more than 180° less than prior (350), add 360 to next
     // 10 < 350 - 180 = 170, so next becomes 10 + 360 = 370
-    // 350 * 0.2 + 370 * 0.8 = 70 + 296 = 366
+    // Result: 350 * 0.2 + 370 * 0.8 = 70 + 296 = 366
+    // Note: Result is unnormalized; caller should use normalizeHeading()
+    const result = smoothValue(350, 10, 0.2);
     expect(result).toBeCloseTo(366);
   });
 
   it('should handle wraparound from 10° to 350° (crossing north going west)', () => {
-    // prior=10, next=350
-    // next > prior + 180? 350 > 10 + 180 = 190? Yes, so next -= 360 -> next = -10
-    // result = 10 * 0.2 + (-10) * 0.8 = 2 - 8 = -6
+    // When next (350) is more than 180° greater than prior (10), subtract 360 from next
+    // 350 > 10 + 180 = 190, so next becomes 350 - 360 = -10
+    // Result: 10 * 0.2 + (-10) * 0.8 = 2 - 8 = -6
+    // Note: Result is unnormalized; caller should use normalizeHeading()
     const result = smoothValue(10, 350, 0.2);
     expect(result).toBeCloseTo(-6);
   });
@@ -190,6 +187,25 @@ describe('smoothOrientation', () => {
 
     // Raw smoothed value: -6, normalized to 354
     expect(result.heading).toBeCloseTo(354);
+  });
+
+  it('should clamp pitch after smoothing if inputs exceed bounds', () => {
+    // If somehow bad data comes in with pitch > 90, result should be clamped
+    const prior: Orientation = { heading: 0, pitch: 85, roll: 0 };
+    const next: Orientation = { heading: 0, pitch: 95, roll: 0 };  // Invalid input
+    const result = smoothOrientation(prior, next, 0.2);
+
+    // Raw smoothed: 85 * 0.2 + 95 * 0.8 = 17 + 76 = 93, clamped to 90
+    expect(result.pitch).toBe(90);
+  });
+
+  it('should clamp negative pitch after smoothing if inputs exceed bounds', () => {
+    const prior: Orientation = { heading: 0, pitch: -85, roll: 0 };
+    const next: Orientation = { heading: 0, pitch: -95, roll: 0 };  // Invalid input
+    const result = smoothOrientation(prior, next, 0.2);
+
+    // Raw smoothed: -85 * 0.2 + -95 * 0.8 = -17 - 76 = -93, clamped to -90
+    expect(result.pitch).toBe(-90);
   });
 });
 
