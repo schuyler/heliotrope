@@ -28,6 +28,7 @@ const halfPI = Math.PI / 2;
 type Orientation = {
   heading: number;
   pitch: number;
+  roll: number;
 };
 
 function toDegrees(radians: number) {
@@ -175,7 +176,7 @@ function HeadUpDisplay(props: {
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObjectCoords>();
-  const [orientation, setOrientation] = useState({ heading: 0, pitch: 0 });
+  const [orientation, setOrientation] = useState<Orientation>({ heading: 0, pitch: 0, roll: 0 });
   const [solarPosition, setSolarPosition] = useState<SolarPosition>({
     time: new Date(),
     elevation: 0,
@@ -213,51 +214,22 @@ export default function App() {
   const updateOrientation = () => {
     if (!motionReading || !compassReading || !solarTable) return;
     
-    // Calculate pitch
-    const { beta, gamma } = motionReading.rotation;
+    // Calculate pitch and roll
+    const { alpha, beta, gamma } = motionReading.rotation;
     const upwards = Math.abs(gamma) > halfPI;
     const absBeta = Math.abs(beta);
     let pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
+    let roll = toDegrees(alpha);
     
     // Calculate heading. Flip the compass reading if the pitch is > 45º,
     // since the iPhone flips the compass values at that pitch.
-    const azimuth = compassReading.trueHeading;
+    const azimuth = compassReading.trueHeading - roll;
     let heading = pitch > 45 ? (azimuth + 180) % 360 : azimuth;
 
-    /*
-    // This entire block of code is meant to create a dead zone for the
-    // heading due to iPhone flipping compass values at 45º of pitch.
-    // Turns out using the gyros to integrate the rotation rate is...
-    // a little jittery, and maybe not necesssary, since this function
-    // is only called when DeviceMotion updates and the logic above seems
-    // to work ok.
-
-    // Calculdate time delta
-    const now = Date.now();
-    const deltaT = (now - lastUpdateTime.current) / 1000;
-    lastUpdateTime.current = now;
-
-    // Determine heading based on pitch zone
-    const rotationRate = motionReading.rotationRate?.alpha || 0;
-    let heading;
-    if (pitch < LOWER_THRESHOLD) {
-      // Trust compass directly
-      heading = azimuth;
-      lastHeading.current = heading;
-    } else if (pitch > UPPER_THRESHOLD) {
-      // Trust flipped compass
-      heading = (azimuth + 180) % 360;
-      lastHeading.current = heading;
-    } else {
-      // Use gyroscope in dead zone
-      const rotationDegrees = toDegrees(rotationRate) * deltaT;
-      heading = (lastHeading.current - rotationDegrees + 360) % 360;
-      lastHeading.current = heading;
-    }
-    */
     // Apply smoothing
     if (priorOrientation) {
       pitch = smoothValues(priorOrientation.pitch, pitch);
+      roll = smoothValues(priorOrientation.roll, roll);
       heading = smoothValues(priorOrientation.heading, heading);
       // If heading is negative after smoothing, we moved counterclockwise
       // past due north, so wrap around
@@ -267,9 +239,9 @@ export default function App() {
         heading = (heading + 360) % 360;
       }
     }
-    priorOrientation = { pitch, heading };
+    priorOrientation = { pitch, roll, heading };
 
-    setOrientation({ pitch, heading });
+    setOrientation({ pitch, roll, heading });
     setSolarPosition(solarTable[Math.floor(heading)]);
   };
 

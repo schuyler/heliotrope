@@ -22,15 +22,11 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "info.schuyler.heliotrope"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "064ad6a1-06e9-46fe-ab58-0f7a027d4596"
-      }
     }
   }
 }
