@@ -10,11 +10,21 @@ import Svg, {
 } from "react-native-svg";
 
 import * as Location from "expo-location";
-import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
+import { Gyroscope, Accelerometer, Magnetometer } from "expo-sensors";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import Madgwick from "ahrs";
+// @ts-ignore - no types available for geomagnetism
+import geomagnetism from "geomagnetism";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
+import {
+  smoothOrientation,
+  applyDeclination,
+  Orientation as AHRSOrientation,
+  SensorReading,
+  hasAllSensorReadings,
+} from "./ahrs-orientation";
 
 import { LogBox } from "react-native";
 
@@ -23,17 +33,12 @@ LogBox.ignoreLogs([
   `Constants.platform.ios.model has been deprecated in favor of expo-device's Device.modelName property. This API will be removed in SDK 45.`,
 ]);
 
-const halfPI = Math.PI / 2;
+// Re-export the Orientation type for use in components
+type Orientation = AHRSOrientation;
 
-type Orientation = {
-  heading: number;
-  pitch: number;
-  roll: number;
-};
-
-function toDegrees(radians: number) {
-  return (radians * 180) / Math.PI;
-}
+// AHRS configuration
+const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
+const AHRS_BETA = 0.1; // Madgwick filter gain (tune between 0.05-0.15)
 
 function padTime(n: number | undefined) {
   if (n == undefined) {
@@ -183,66 +188,76 @@ export default function App() {
   });
   const [_errorMsg, setErrorMsg] = useState("");
   const [cameraPermission, requestCameraPermissions] = useCameraPermissions();
-  const subscriptions: { remove: () => void }[] = [];
 
-  let motionReading: DeviceMotionMeasurement,
-    compassReading: Location.LocationHeadingObject,
-    priorOrientation: Orientation | undefined;
-  let solarTable: SolarTable;
+  // Refs for mutable values that persist across renders
+  const subscriptionsRef = useRef<{ remove: () => void }[]>([]);
+  const solarTableRef = useRef<SolarTable | null>(null);
+  const declinationRef = useRef<number>(0);
+  const priorOrientationRef = useRef<Orientation | null>(null);
 
-  const updateInterval = 25; // ms
+  // Sensor data refs (updated by sensor callbacks)
+  const gyroDataRef = useRef<SensorReading | null>(null);
+  const accelDataRef = useRef<SensorReading | null>(null);
+  const magDataRef = useRef<SensorReading | null>(null);
 
-  const smoothValues = (
-    prior: number,
-    next: number,
-    smoothing: number = 0.2
-  ) => {
-    // If next and prior are really far apart, wrap them around
-    if (next > prior + 180) next -= 360;
-    if (next < prior - 180) next += 360;
-    return prior * smoothing + next * (1 - smoothing);
-  };
+  // AHRS filter ref
+  const madgwickRef = useRef<Madgwick | null>(null);
 
-  /*
-  // Constants for heading smoothing -- currently unused
-  const LOWER_THRESHOLD = 40;
-  const UPPER_THRESHOLD = 50;
-  const lastHeading = useRef(0);
-  const lastUpdateTime = useRef(Date.now());
-  */
+  // Initialize Madgwick filter on first render
+  if (!madgwickRef.current) {
+    madgwickRef.current = new Madgwick({
+      sampleInterval: AHRS_SAMPLE_INTERVAL,
+      beta: AHRS_BETA,
+    });
+  }
 
-  const updateOrientation = () => {
-    if (!motionReading || !compassReading || !solarTable) return;
-    
-    // Calculate pitch and roll
-    const { alpha, beta, gamma } = motionReading.rotation;
-    const upwards = Math.abs(gamma) > halfPI;
-    const absBeta = Math.abs(beta);
-    let pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
-    let roll = toDegrees(alpha);
-    
-    // Calculate heading. Flip the compass reading if the pitch is > 45º,
-    // since the iPhone flips the compass values at that pitch.
-    const azimuth = compassReading.trueHeading - roll;
-    let heading = pitch > 45 ? (azimuth + 180) % 360 : azimuth;
+  /**
+   * Updates orientation using AHRS sensor fusion.
+   * Called whenever any sensor provides new data.
+   */
+  const updateOrientationAHRS = () => {
+    const gyro = gyroDataRef.current;
+    const accel = accelDataRef.current;
+    const mag = magDataRef.current;
+    const solarTable = solarTableRef.current;
+    const madgwick = madgwickRef.current;
 
-    // Apply smoothing
-    if (priorOrientation) {
-      pitch = smoothValues(priorOrientation.pitch, pitch);
-      roll = smoothValues(priorOrientation.roll, roll);
-      heading = smoothValues(priorOrientation.heading, heading);
-      // If heading is negative after smoothing, we moved counterclockwise
-      // past due north, so wrap around
-      if (heading >= 0) {
-        heading = heading % 360
-      } else {
-        heading = (heading + 360) % 360;
-      }
+    // Wait until we have all three sensor readings and solar table
+    if (!hasAllSensorReadings(gyro, accel, mag) || !solarTable || !madgwick) {
+      return;
     }
-    priorOrientation = { pitch, roll, heading };
 
-    setOrientation({ pitch, roll, heading });
-    setSolarPosition(solarTable[Math.floor(heading)]);
+    // Update Madgwick filter with sensor data
+    // Gyroscope: rad/s, Accelerometer: g, Magnetometer: µT
+    madgwick.update(
+      gyro!.x, gyro!.y, gyro!.z,
+      accel!.x, accel!.y, accel!.z,
+      mag!.x, mag!.y, mag!.z
+    );
+
+    // Get Euler angles from AHRS
+    const euler = madgwick.getEulerAngles();
+
+    // Convert to degrees and apply coordinate system adjustments
+    // Note: May need to adjust signs/offsets based on device testing
+    let heading = euler.heading * (180 / Math.PI);
+    let pitch = euler.pitch * (180 / Math.PI);
+    let roll = euler.roll * (180 / Math.PI);
+
+    // Apply magnetic declination for true heading
+    heading = applyDeclination(heading, declinationRef.current);
+
+    // Create new orientation
+    let newOrientation: Orientation = { heading, pitch, roll };
+
+    // Apply smoothing if we have a prior orientation
+    if (priorOrientationRef.current) {
+      newOrientation = smoothOrientation(priorOrientationRef.current, newOrientation, 0.2);
+    }
+
+    priorOrientationRef.current = newOrientation;
+    setOrientation(newOrientation);
+    setSolarPosition(solarTable[Math.floor(newOrientation.heading)]);
   };
 
   useEffect(() => {
@@ -263,41 +278,74 @@ export default function App() {
         return;
       }
       setLocation(lastKnownLocation.coords);
-      if (!solarTable) {
-        solarTable = generateSolarTable(lastKnownLocation.coords);
+
+      // Generate solar table
+      if (!solarTableRef.current) {
+        solarTableRef.current = generateSolarTable(lastKnownLocation.coords);
       }
 
-      // Start watching the device's compass heading
-      subscriptions.push(
-        await Location.watchHeadingAsync((reading) => {
-          // Only register high accuracy readings
-          if (reading.accuracy == 3) { // 3 is the highest
-            compassReading = reading;
-          }
-        })
-      );
-      DeviceMotion.setUpdateInterval(updateInterval);
+      // Calculate magnetic declination for true north correction
+      try {
+        const geoMag = geomagnetism.model().point([
+          lastKnownLocation.coords.latitude,
+          lastKnownLocation.coords.longitude,
+        ]);
+        declinationRef.current = geoMag.decl; // Degrees
+      } catch (e) {
+        console.warn("Failed to calculate magnetic declination:", e);
+        declinationRef.current = 0;
+      }
 
-      const motionPerms = await DeviceMotion.requestPermissionsAsync();
-      if (motionPerms.status !== "granted") {
+      // Request sensor permissions
+      const [gyroPerms, accelPerms, magPerms] = await Promise.all([
+        Gyroscope.requestPermissionsAsync(),
+        Accelerometer.requestPermissionsAsync(),
+        Magnetometer.requestPermissionsAsync(),
+      ]);
+
+      if (gyroPerms.status !== "granted" ||
+          accelPerms.status !== "granted" ||
+          magPerms.status !== "granted") {
         setErrorMsg("Permission to access motion sensors was denied");
-        console.log("Device motion permission denied");
+        console.log("Sensor permissions denied");
         return;
       }
-      // Start watching the device's motion
-      subscriptions.push(
-        DeviceMotion.addListener((reading) => {
-          motionReading = reading;
-          updateOrientation();
+
+      // Set update intervals for all sensors (50Hz = 20ms)
+      Gyroscope.setUpdateInterval(AHRS_SAMPLE_INTERVAL);
+      Accelerometer.setUpdateInterval(AHRS_SAMPLE_INTERVAL);
+      Magnetometer.setUpdateInterval(AHRS_SAMPLE_INTERVAL);
+
+      // Subscribe to gyroscope
+      subscriptionsRef.current.push(
+        Gyroscope.addListener((data) => {
+          gyroDataRef.current = data;
+          updateOrientationAHRS();
         })
       );
-      DeviceMotion.setUpdateInterval(updateInterval);
+
+      // Subscribe to accelerometer
+      subscriptionsRef.current.push(
+        Accelerometer.addListener((data) => {
+          accelDataRef.current = data;
+          updateOrientationAHRS();
+        })
+      );
+
+      // Subscribe to magnetometer
+      subscriptionsRef.current.push(
+        Magnetometer.addListener((data) => {
+          magDataRef.current = data;
+          updateOrientationAHRS();
+        })
+      );
     })();
 
     return () => {
-      subscriptions.forEach((sub) => {
+      subscriptionsRef.current.forEach((sub) => {
         sub.remove();
       });
+      subscriptionsRef.current = [];
     };
   }, []);
 
