@@ -87,9 +87,10 @@ export function convertEulerToOrientation(
   headingOffset: number = 0,
   invertPitch: boolean = false
 ): Orientation {
+  const pitch = invertPitch ? -euler.pitch : euler.pitch;
   return {
     heading: normalizeHeading(euler.heading + headingOffset),
-    pitch: invertPitch ? -euler.pitch : euler.pitch,
+    pitch: clampPitch(pitch),
     roll: euler.roll,
   };
 }

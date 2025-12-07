@@ -139,6 +139,25 @@ describe('convertEulerToOrientation', () => {
     expect(result.pitch).toBe(30);
     expect(result.roll).toBe(10);
   });
+
+  it('should clamp pitch values exceeding 90°', () => {
+    const euler = { heading: 0, pitch: 95, roll: 0 };
+    const result = convertEulerToOrientation(euler);
+    expect(result.pitch).toBe(90);
+  });
+
+  it('should clamp pitch values below -90°', () => {
+    const euler = { heading: 0, pitch: -100, roll: 0 };
+    const result = convertEulerToOrientation(euler);
+    expect(result.pitch).toBe(-90);
+  });
+
+  it('should clamp inverted pitch that exceeds bounds', () => {
+    // pitch = -95, inverted = 95, clamped to 90
+    const euler = { heading: 0, pitch: -95, roll: 0 };
+    const result = convertEulerToOrientation(euler, 0, true);
+    expect(result.pitch).toBe(90);
+  });
 });
 
 describe('smoothOrientation', () => {
@@ -271,6 +290,19 @@ describe('headingDifference', () => {
     expect(headingDifference(0, 179)).toBe(179);
     expect(headingDifference(0, 181)).toBe(-179);
   });
+
+  it('should handle very small heading differences', () => {
+    expect(headingDifference(0, 0.1)).toBeCloseTo(0.1);
+    expect(headingDifference(359.9, 0.1)).toBeCloseTo(0.2);
+    expect(headingDifference(0.1, 359.9)).toBeCloseTo(-0.2);
+  });
+
+  it('should handle sub-degree changes across north', () => {
+    // 359.5 -> 0.5: difference should be +1
+    expect(headingDifference(359.5, 0.5)).toBeCloseTo(1);
+    // 0.5 -> 359.5: difference should be -1
+    expect(headingDifference(0.5, 359.5)).toBeCloseTo(-1);
+  });
 });
 
 describe('integration: smoothing across north', () => {
@@ -309,6 +341,43 @@ describe('integration: smoothing across north', () => {
     // Final heading should be close to 350
     expect(heading).toBeGreaterThan(345);
     expect(heading).toBeLessThan(360);
+  });
+
+  it('should handle rapid back-and-forth north crossings', () => {
+    let heading = 355;
+
+    // Simulate oscillating around north: 355 -> 5 -> 358 -> 2 -> 359 -> 1
+    const updates = [5, 358, 2, 359, 1, 0, 359, 1];
+
+    for (const next of updates) {
+      const prevHeading = heading;
+      heading = normalizeHeading(smoothValue(heading, next, 0.2));
+
+      // Should always be valid
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(heading).toBeLessThan(360);
+
+      // Should never jump more than ~30° in a single smooth step
+      // (with smoothing=0.2, max change is 80% of input change)
+      const diff = Math.abs(headingDifference(prevHeading, heading));
+      expect(diff).toBeLessThan(30);
+    }
+  });
+
+  it('should handle sub-degree smoothing across north', () => {
+    let heading = 359.8;
+
+    // Very small steps across north
+    const updates = [359.9, 0.0, 0.1, 0.2];
+
+    for (const next of updates) {
+      heading = normalizeHeading(smoothValue(heading, next, 0.2));
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(heading).toBeLessThan(360);
+    }
+
+    // Should end up very close to 0.2
+    expect(heading).toBeLessThan(1);
   });
 });
 
@@ -350,5 +419,122 @@ describe('integration: orientation at high pitch angles', () => {
     // Should smoothly transition, no 180° flip
     expect(result.heading).toBeCloseTo(98);
     expect(result.pitch).toBe(60);
+  });
+
+  it('should smooth heading while pitch increases through critical 45° angle', () => {
+    // This simulates the real-world scenario: rotating while tilting up
+    // Heading crosses north while pitch rises through the problematic 45° threshold
+    let orientation: Orientation = { heading: 350, pitch: 40, roll: 0 };
+
+    const updates = [
+      { heading: 355, pitch: 43, roll: 0 },
+      { heading: 0, pitch: 46, roll: 0 },   // Cross both north AND 45° threshold
+      { heading: 5, pitch: 50, roll: 0 },
+      { heading: 10, pitch: 55, roll: 0 },
+    ];
+
+    for (const next of updates) {
+      const prevHeading = orientation.heading;
+      orientation = smoothOrientation(orientation, next, 0.2);
+
+      // Pitch should stay valid
+      expect(orientation.pitch).toBeGreaterThanOrEqual(-90);
+      expect(orientation.pitch).toBeLessThanOrEqual(90);
+
+      // Heading should stay valid and not jump wildly
+      expect(orientation.heading).toBeGreaterThanOrEqual(0);
+      expect(orientation.heading).toBeLessThan(360);
+
+      // No sudden 180° flip - max change should be reasonable
+      const headingChange = Math.abs(headingDifference(prevHeading, orientation.heading));
+      expect(headingChange).toBeLessThan(30);
+    }
+
+    // Final state should be approaching the last update
+    expect(orientation.heading).toBeLessThan(15);
+    expect(orientation.pitch).toBeGreaterThan(45);
+  });
+
+  it('should handle continuous rotation at 60° pitch crossing all cardinal directions', () => {
+    // Full 360° rotation at high pitch
+    let orientation: Orientation = { heading: 0, pitch: 60, roll: 0 };
+
+    // Rotate through N -> E -> S -> W -> N
+    const updates = [
+      { heading: 45, pitch: 60, roll: 0 },
+      { heading: 90, pitch: 60, roll: 0 },
+      { heading: 135, pitch: 60, roll: 0 },
+      { heading: 180, pitch: 60, roll: 0 },
+      { heading: 225, pitch: 60, roll: 0 },
+      { heading: 270, pitch: 60, roll: 0 },
+      { heading: 315, pitch: 60, roll: 0 },
+      { heading: 0, pitch: 60, roll: 0 },
+    ];
+
+    for (const next of updates) {
+      const prevHeading = orientation.heading;
+      orientation = smoothOrientation(orientation, next, 0.2);
+
+      // Verify no discontinuities
+      const headingChange = Math.abs(headingDifference(prevHeading, orientation.heading));
+      expect(headingChange).toBeLessThan(50); // ~45° steps, smoothed
+    }
+  });
+});
+
+describe('integration: 45° flip problem documentation', () => {
+  /**
+   * IMPORTANT: Understanding the 45° compass flip problem
+   *
+   * The iPhone's built-in compass (Location.watchHeadingAsync) has a known issue
+   * where it flips the heading by 180° when device pitch exceeds ~45°.
+   *
+   * These utility functions DO NOT prevent this flip directly. Instead:
+   * 1. The flip is prevented by using raw magnetometer data via AHRS
+   * 2. The Madgwick filter computes heading from raw sensors without Apple's processing
+   * 3. These functions handle the AHRS output correctly at all pitch angles
+   *
+   * The tests below verify that IF a 180° flip somehow occurred in the input,
+   * our smoothing would dampen it rather than pass it through instantly.
+   */
+
+  it('should dampen a sudden 180° heading change (simulating corrupted data)', () => {
+    // If bad data comes in with a 180° flip, smoothing should dampen it
+    const prior: Orientation = { heading: 90, pitch: 50, roll: 0 };
+    const flipped: Orientation = { heading: 270, pitch: 50, roll: 0 }; // 180° flip!
+
+    const result = smoothOrientation(prior, flipped, 0.2);
+
+    // With smoothing=0.2, we move 80% toward the new value
+    // But the smoothing should take the SHORT path around the circle
+    // 90 -> 270 via shortest path is actually -180° (or +180°)
+    // smoothValue will see 270 > 90 + 180, so it subtracts 360: 270-360 = -90
+    // Result: 90 * 0.2 + (-90) * 0.8 = 18 - 72 = -54, normalized to 306
+
+    // The key point: we don't instantly jump to 270
+    expect(result.heading).not.toBe(270);
+
+    // The smoothed result dampens the change
+    const change = Math.abs(headingDifference(prior.heading, result.heading));
+    expect(change).toBeLessThan(180); // Not a full flip
+  });
+
+  it('should demonstrate that smoothing alone cannot fully prevent flips', () => {
+    // This test documents that multiple consecutive bad readings WOULD
+    // eventually cause the heading to flip. The real solution is in the
+    // AHRS filter providing correct data, not in post-processing.
+
+    let orientation: Orientation = { heading: 90, pitch: 50, roll: 0 };
+
+    // Simulate several frames of "flipped" data (heading jumped to 270)
+    const flippedReadings = Array(20).fill({ heading: 270, pitch: 50, roll: 0 });
+
+    for (const next of flippedReadings) {
+      orientation = smoothOrientation(orientation, next, 0.2);
+    }
+
+    // After many frames of consistent "wrong" data, smoothing converges to it
+    // This demonstrates why we need correct AHRS output, not just smoothing
+    expect(orientation.heading).toBeCloseTo(270, 0);
   });
 });
