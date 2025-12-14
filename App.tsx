@@ -287,7 +287,6 @@ export default function App() {
         while (offset < -180) offset += 360;
 
         headingOffsetRef.current = offset;
-        lastCalibrationTimeRef.current = Date.now();
 
         // Hide splash screen on first successful calibration
         if (!isCalibrated.current) {
@@ -301,6 +300,10 @@ export default function App() {
       console.warn("Compass calibration failed:", e);
     } finally {
       calibrationInProgressRef.current = false;
+      // Always update timestamp to prevent infinite retry on failure
+      if (lastCalibrationTimeRef.current === 0) {
+        lastCalibrationTimeRef.current = Date.now();
+      }
     }
   };
 
@@ -456,6 +459,7 @@ export default function App() {
       if (locationPerms.status !== "granted") {
         setErrorMsg("Permission to access location was denied");
         console.log("Location permission denied");
+        SplashScreen.hideAsync().catch(() => {});
         return;
       }
 
@@ -463,6 +467,7 @@ export default function App() {
       const lastKnownLocation = await Location.getLastKnownPositionAsync();
       if (!lastKnownLocation) {
         setErrorMsg("Can't determine last known location");
+        SplashScreen.hideAsync().catch(() => {});
         return;
       }
       setLocation(lastKnownLocation.coords);
@@ -484,6 +489,7 @@ export default function App() {
           magPerms.status !== "granted") {
         setErrorMsg("Permission to access motion sensors was denied");
         console.log("Sensor permissions denied");
+        SplashScreen.hideAsync().catch(() => {});
         return;
       }
 
