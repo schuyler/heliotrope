@@ -236,17 +236,27 @@ export default function App() {
 
   /**
    * Performs compass calibration by comparing AHRS heading to iOS compass.
-   * Called when pitch is level and calibration interval has elapsed.
+   * Called on first reading (regardless of pitch) and periodically when level.
+   * @param ahrsHeading - Current AHRS heading in degrees
+   * @param pitch - Current pitch in degrees (used for 180° flip correction)
    */
-  const performCalibration = async (ahrsHeading: number) => {
+  const performCalibration = async (ahrsHeading: number, pitch: number) => {
     if (calibrationInProgressRef.current) return;
     calibrationInProgressRef.current = true;
 
     try {
       const iosHeading = await Location.getHeadingAsync();
       if (iosHeading && Number.isFinite(iosHeading.trueHeading)) {
+        let correctedIosHeading = iosHeading.trueHeading;
+
+        // iOS compass flips 180° at high pitch angles (the gimbal lock problem).
+        // If we're calibrating at high pitch, compensate for this known failure.
+        if (Math.abs(pitch) > 45) {
+          correctedIosHeading = (correctedIosHeading + 180) % 360;
+        }
+
         // Calculate offset: what we need to add to AHRS to match iOS
-        let offset = iosHeading.trueHeading - ahrsHeading;
+        let offset = correctedIosHeading - ahrsHeading;
         // Normalize to [-180, 180]
         while (offset > 180) offset -= 360;
         while (offset < -180) offset += 360;
@@ -327,12 +337,17 @@ export default function App() {
     let pitch = euler.pitch * (180 / Math.PI);
     let roll = euler.roll * (180 / Math.PI);
 
-    // Check if we should recalibrate (pitch is level and interval has elapsed)
+    // Calibration logic:
+    // - First reading: always calibrate (bootstrap), with 180° flip correction if tilted
+    // - Subsequent: only calibrate when level and interval has elapsed
     const now = Date.now();
+    const isFirstReading = lastCalibrationTimeRef.current === 0;
     const timeSinceCalibration = now - lastCalibrationTimeRef.current;
-    if (Math.abs(pitch) < CALIBRATION_PITCH_THRESHOLD &&
-        timeSinceCalibration >= CALIBRATION_INTERVAL_MS) {
-      performCalibration(heading);
+    const isLevel = Math.abs(pitch) < CALIBRATION_PITCH_THRESHOLD;
+    const intervalElapsed = timeSinceCalibration >= CALIBRATION_INTERVAL_MS;
+
+    if (isFirstReading || (isLevel && intervalElapsed)) {
+      performCalibration(heading, pitch);
     }
 
     // Apply heading offset from compass calibration
