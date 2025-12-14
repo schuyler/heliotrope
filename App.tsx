@@ -45,7 +45,9 @@ LogBox.ignoreLogs([
 type Orientation = AHRSOrientation;
 
 // Keep splash screen visible until calibration completes
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch((e) => {
+  console.warn("Failed to prevent splash auto-hide:", e);
+});
 
 // AHRS configuration
 const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
@@ -53,6 +55,7 @@ const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
 // Compass calibration configuration
 const CALIBRATION_INTERVAL_MS = 30000; // Recalibrate every 30 seconds
 const CALIBRATION_PITCH_THRESHOLD = 15; // Only calibrate when |pitch| < 15°
+const SPLASH_TIMEOUT_MS = 10000; // Max time to wait for calibration before showing app
 
 function padTime(n: number | undefined) {
   if (n == undefined) {
@@ -241,6 +244,21 @@ export default function App() {
     });
   }
 
+  // Splash screen timeout - don't leave user stuck if calibration fails
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!isCalibrated.current) {
+        console.warn("Calibration timeout - showing app without calibration");
+        isCalibrated.current = true;
+        SplashScreen.hideAsync().catch((e) =>
+          console.warn("Failed to hide splash screen:", e)
+        );
+      }
+    }, SPLASH_TIMEOUT_MS);
+
+    return () => clearTimeout(timeout);
+  }, []);
+
   /**
    * Performs compass calibration by comparing AHRS heading to iOS compass.
    * Called on first reading (regardless of pitch) and periodically when level.
@@ -274,7 +292,9 @@ export default function App() {
         // Hide splash screen on first successful calibration
         if (!isCalibrated.current) {
           isCalibrated.current = true;
-          SplashScreen.hideAsync();
+          SplashScreen.hideAsync().catch((e) =>
+            console.warn("Failed to hide splash screen:", e)
+          );
         }
       }
     } catch (e) {

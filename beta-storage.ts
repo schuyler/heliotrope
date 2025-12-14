@@ -32,9 +32,15 @@ export async function loadBeta(): Promise<number> {
 
 /**
  * Save beta value to AsyncStorage.
- * Clamps value to valid range before saving.
+ * Validates input and clamps to valid range before saving.
  */
 export async function saveBeta(beta: number): Promise<void> {
+  // Reject invalid input
+  if (!Number.isFinite(beta)) {
+    console.warn('Invalid beta value, not saving:', beta);
+    return;
+  }
+
   try {
     const clampedBeta = Math.max(MIN_BETA, Math.min(MAX_BETA, beta));
     await AsyncStorage.setItem(BETA_STORAGE_KEY, clampedBeta.toString());
@@ -45,12 +51,13 @@ export async function saveBeta(beta: number): Promise<void> {
 
 /**
  * Generate array of valid beta values for picker.
- * Returns [0.01, 0.02, ..., 0.30]
+ * Returns [0.01, 0.02, ..., 0.30] with exact precision.
  */
 export function generateBetaValues(): number[] {
   const values: number[] = [];
-  for (let i = MIN_BETA * 100; i <= MAX_BETA * 100; i++) {
-    values.push(i / 100);
+  for (let i = Math.round(MIN_BETA * 100); i <= Math.round(MAX_BETA * 100); i++) {
+    // Round to avoid floating point precision issues
+    values.push(Math.round(i) / 100);
   }
   return values;
 }

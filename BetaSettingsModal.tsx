@@ -2,7 +2,7 @@
  * Modal component for adjusting AHRS beta parameter
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Modal,
   View,
@@ -12,6 +12,7 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import WheelPicker from '@quidone/react-native-wheel-picker';
 import { generateBetaValues, MIN_BETA, MAX_BETA } from './beta-storage';
@@ -26,7 +27,13 @@ type Props = {
 export function BetaSettingsModal({ visible, currentBeta, onClose, onBetaChange }: Props) {
   const [manualInput, setManualInput] = useState<string>('');
   const [selectedBeta, setSelectedBeta] = useState<number>(currentBeta);
-  const betaValues = generateBetaValues();
+
+  // Memoize to avoid recreating on every render
+  const betaValues = useMemo(() => generateBetaValues(), []);
+  const pickerData = useMemo(
+    () => betaValues.map(v => ({ value: v, label: v.toFixed(2) })),
+    [betaValues]
+  );
 
   // Sync selected beta when modal opens
   useEffect(() => {
@@ -37,7 +44,13 @@ export function BetaSettingsModal({ visible, currentBeta, onClose, onBetaChange 
   }, [visible, currentBeta]);
 
   const handleApply = () => {
+    Keyboard.dismiss();
     onBetaChange(selectedBeta);
+    onClose();
+  };
+
+  const handleCancel = () => {
+    Keyboard.dismiss();
     onClose();
   };
 
@@ -48,11 +61,6 @@ export function BetaSettingsModal({ visible, currentBeta, onClose, onBetaChange 
       setManualInput('');
     }
   };
-
-  const pickerData = betaValues.map(v => ({
-    value: v,
-    label: v.toFixed(2),
-  }));
 
   return (
     <Modal
@@ -101,7 +109,7 @@ export function BetaSettingsModal({ visible, currentBeta, onClose, onBetaChange 
 
           {/* Action Buttons */}
           <View style={modalStyles.buttonRow}>
-            <TouchableOpacity style={modalStyles.cancelButton} onPress={onClose}>
+            <TouchableOpacity style={modalStyles.cancelButton} onPress={handleCancel}>
               <Text style={modalStyles.buttonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity style={modalStyles.applyButton} onPress={handleApply}>
