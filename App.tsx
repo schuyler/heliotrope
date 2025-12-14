@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Text, View, Dimensions, Image } from "react-native";
+import { Text, View, Dimensions, Image, Animated, StyleSheet } from "react-native";
 import {
   GestureHandlerRootView,
   Gesture,
@@ -226,6 +226,11 @@ export default function App() {
   const lastCalibrationTimeRef = useRef<number>(0);
   const calibrationInProgressRef = useRef<boolean>(false);
 
+  // Calibration overlay state and animations
+  const [isCalibrated, setIsCalibrated] = useState<boolean>(false);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+
   // Initialize Madgwick filter on first render
   if (!madgwickRef.current) {
     madgwickRef.current = new Madgwick({
@@ -233,6 +238,39 @@ export default function App() {
       beta: ahrsBetaRef.current,
     });
   }
+
+  // Start pulse animation on mount, fade out when calibrated
+  useEffect(() => {
+    // Pulse animation loop
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 0.6,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulse.start();
+
+    return () => pulse.stop();
+  }, []);
+
+  // Fade out overlay when calibrated
+  useEffect(() => {
+    if (isCalibrated) {
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [isCalibrated]);
 
   /**
    * Performs compass calibration by comparing AHRS heading to iOS compass.
@@ -263,6 +301,11 @@ export default function App() {
 
         headingOffsetRef.current = offset;
         lastCalibrationTimeRef.current = Date.now();
+
+        // Mark as calibrated on first successful calibration (triggers fade out)
+        if (!isCalibrated) {
+          setIsCalibrated(true);
+        }
       }
     } catch (e) {
       console.warn("Compass calibration failed:", e);
