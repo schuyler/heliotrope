@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Text, View, Dimensions, Image } from "react-native";
+import * as SplashScreen from "expo-splash-screen";
+import {
+  GestureHandlerRootView,
+  Gesture,
+  GestureDetector,
+} from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 
 import Svg, {
   Circle,
@@ -10,11 +17,22 @@ import Svg, {
 } from "react-native-svg";
 
 import * as Location from "expo-location";
-import { DeviceMotion, DeviceMotionMeasurement } from "expo-sensors";
+import { Gyroscope, Accelerometer, Magnetometer } from "expo-sensors";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import Madgwick from "ahrs";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
+import {
+  smoothOrientation,
+  applyDeclination,
+  Orientation as AHRSOrientation,
+  SensorReading,
+  hasAllSensorReadings,
+  isValidSensorReading,
+} from "./ahrs-orientation";
+import { BetaSettingsModal } from "./BetaSettingsModal";
+import { loadBeta, saveBeta, DEFAULT_BETA } from "./beta-storage";
 
 import { LogBox } from "react-native";
 
@@ -23,17 +41,21 @@ LogBox.ignoreLogs([
   `Constants.platform.ios.model has been deprecated in favor of expo-device's Device.modelName property. This API will be removed in SDK 45.`,
 ]);
 
-const halfPI = Math.PI / 2;
+// Re-export the Orientation type for use in components
+type Orientation = AHRSOrientation;
 
-type Orientation = {
-  heading: number;
-  pitch: number;
-  roll: number;
-};
+// Keep splash screen visible until calibration completes
+SplashScreen.preventAutoHideAsync().catch((e) => {
+  console.warn("Failed to prevent splash auto-hide:", e);
+});
 
-function toDegrees(radians: number) {
-  return (radians * 180) / Math.PI;
-}
+// AHRS configuration
+const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
+
+// Compass calibration configuration
+const CALIBRATION_INTERVAL_MS = 30000; // Recalibrate every 30 seconds
+const CALIBRATION_PITCH_THRESHOLD = 15; // Only calibrate when |pitch| < 15°
+const SPLASH_TIMEOUT_MS = 10000; // Max time to wait for calibration before showing app
 
 function padTime(n: number | undefined) {
   if (n == undefined) {
@@ -183,67 +205,251 @@ export default function App() {
   });
   const [_errorMsg, setErrorMsg] = useState("");
   const [cameraPermission, requestCameraPermissions] = useCameraPermissions();
-  const subscriptions: { remove: () => void }[] = [];
 
-  let motionReading: DeviceMotionMeasurement,
-    compassReading: Location.LocationHeadingObject,
-    priorOrientation: Orientation | undefined;
-  let solarTable: SolarTable;
+  // Refs for mutable values that persist across renders
+  const subscriptionsRef = useRef<{ remove: () => void }[]>([]);
+  const solarTableRef = useRef<SolarTable | null>(null);
+  const priorOrientationRef = useRef<Orientation | null>(null);
 
-  const updateInterval = 25; // ms
+  // Sensor data refs (updated by sensor callbacks)
+  const gyroDataRef = useRef<SensorReading | null>(null);
+  const accelDataRef = useRef<SensorReading | null>(null);
+  const magDataRef = useRef<SensorReading | null>(null);
 
-  const smoothValues = (
-    prior: number,
-    next: number,
-    smoothing: number = 0.2
-  ) => {
-    // If next and prior are really far apart, wrap them around
-    if (next > prior + 180) next -= 360;
-    if (next < prior - 180) next += 360;
-    return prior * smoothing + next * (1 - smoothing);
-  };
+  // AHRS filter ref
+  const madgwickRef = useRef<Madgwick | null>(null);
 
-  /*
-  // Constants for heading smoothing -- currently unused
-  const LOWER_THRESHOLD = 40;
-  const UPPER_THRESHOLD = 50;
-  const lastHeading = useRef(0);
-  const lastUpdateTime = useRef(Date.now());
-  */
+  // AHRS failure detection
+  const ahrsFailureCountRef = useRef<number>(0);
+  const MAX_AHRS_FAILURES = 10;
 
-  const updateOrientation = () => {
-    if (!motionReading || !compassReading || !solarTable) return;
-    
-    // Calculate pitch and roll
-    const { alpha, beta, gamma } = motionReading.rotation;
-    const upwards = Math.abs(gamma) > halfPI;
-    const absBeta = Math.abs(beta);
-    let pitch = toDegrees(upwards ? halfPI - absBeta : absBeta - halfPI);
-    let roll = toDegrees(alpha);
-    
-    // Calculate heading. Flip the compass reading if the pitch is > 45º,
-    // since the iPhone flips the compass values at that pitch.
-    const azimuth = compassReading.trueHeading - roll;
-    let heading = pitch > 45 ? (azimuth + 180) % 360 : azimuth;
+  // Beta parameter state and modal
+  const [ahrsBeta, setAhrsBeta] = useState<number>(DEFAULT_BETA);
+  const [betaModalVisible, setBetaModalVisible] = useState<boolean>(false);
+  const ahrsBetaRef = useRef<number>(DEFAULT_BETA);
 
-    // Apply smoothing
-    if (priorOrientation) {
-      pitch = smoothValues(priorOrientation.pitch, pitch);
-      roll = smoothValues(priorOrientation.roll, roll);
-      heading = smoothValues(priorOrientation.heading, heading);
-      // If heading is negative after smoothing, we moved counterclockwise
-      // past due north, so wrap around
-      if (heading >= 0) {
-        heading = heading % 360
-      } else {
-        heading = (heading + 360) % 360;
+  // Compass calibration (heading offset from iOS compass)
+  const headingOffsetRef = useRef<number>(0);
+  const lastCalibrationTimeRef = useRef<number>(0);
+  const calibrationInProgressRef = useRef<boolean>(false);
+
+  // Track whether first calibration has completed
+  const isCalibrated = useRef<boolean>(false);
+
+  // Initialize Madgwick filter on first render
+  if (!madgwickRef.current) {
+    madgwickRef.current = new Madgwick({
+      sampleInterval: AHRS_SAMPLE_INTERVAL,
+      beta: ahrsBetaRef.current,
+    });
+  }
+
+  // Splash screen timeout - don't leave user stuck if calibration fails
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!isCalibrated.current) {
+        console.warn("Calibration timeout - showing app without calibration");
+        isCalibrated.current = true;
+        SplashScreen.hideAsync().catch((e) =>
+          console.warn("Failed to hide splash screen:", e)
+        );
+      }
+    }, SPLASH_TIMEOUT_MS);
+
+    return () => clearTimeout(timeout);
+  }, []);
+
+  /**
+   * Performs compass calibration by comparing AHRS heading to iOS compass.
+   * Called on first reading (regardless of pitch) and periodically when level.
+   * @param ahrsHeading - Current AHRS heading in degrees
+   * @param pitch - Current pitch in degrees (used for 180° flip correction)
+   */
+  const performCalibration = async (ahrsHeading: number, pitch: number) => {
+    if (calibrationInProgressRef.current) return;
+    calibrationInProgressRef.current = true;
+
+    try {
+      const iosHeading = await Location.getHeadingAsync();
+      if (iosHeading && Number.isFinite(iosHeading.trueHeading)) {
+        let correctedIosHeading = iosHeading.trueHeading;
+
+        // iOS compass flips 180° at high pitch angles (the gimbal lock problem).
+        // If we're calibrating at high pitch, compensate for this known failure.
+        if (Math.abs(pitch) > 45) {
+          correctedIosHeading = (correctedIosHeading + 180) % 360;
+        }
+
+        // Calculate offset: what we need to add to AHRS to match iOS
+        let offset = correctedIosHeading - ahrsHeading;
+        // Normalize to [-180, 180]
+        while (offset > 180) offset -= 360;
+        while (offset < -180) offset += 360;
+
+        headingOffsetRef.current = offset;
+
+        // Hide splash screen on first successful calibration
+        if (!isCalibrated.current) {
+          isCalibrated.current = true;
+          SplashScreen.hideAsync().catch((e) =>
+            console.warn("Failed to hide splash screen:", e)
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("Compass calibration failed:", e);
+    } finally {
+      calibrationInProgressRef.current = false;
+      // Always update timestamp to prevent infinite retry on failure
+      if (lastCalibrationTimeRef.current === 0) {
+        lastCalibrationTimeRef.current = Date.now();
       }
     }
-    priorOrientation = { pitch, roll, heading };
-
-    setOrientation({ pitch, roll, heading });
-    setSolarPosition(solarTable[Math.floor(heading)]);
   };
+
+  /**
+   * Updates orientation using AHRS sensor fusion.
+   * Called whenever any sensor provides new data.
+   */
+  const updateOrientationAHRS = () => {
+    const gyro = gyroDataRef.current;
+    const accel = accelDataRef.current;
+    const mag = magDataRef.current;
+    const solarTable = solarTableRef.current;
+    const madgwick = madgwickRef.current;
+
+    // Wait until we have all three sensor readings and filter is ready
+    if (!hasAllSensorReadings(gyro, accel, mag) || !madgwick) {
+      return;
+    }
+
+    // Validate sensor data to prevent NaN/Infinity from corrupting AHRS
+    if (!isValidSensorReading(gyro) ||
+        !isValidSensorReading(accel) ||
+        !isValidSensorReading(mag)) {
+      console.warn("Invalid sensor reading detected, skipping AHRS update");
+      return;
+    }
+
+    // Update Madgwick filter with sensor data
+    // Gyroscope: rad/s, Accelerometer: g, Magnetometer: µT
+    madgwick.update(
+      gyro!.x, gyro!.y, gyro!.z,
+      accel!.x, accel!.y, accel!.z,
+      mag!.x, mag!.y, mag!.z
+    );
+
+    // Get Euler angles from AHRS
+    const euler = madgwick.getEulerAngles();
+
+    // Validate Euler angles - filter can produce NaN if corrupted
+    if (!Number.isFinite(euler.heading) ||
+        !Number.isFinite(euler.pitch) ||
+        !Number.isFinite(euler.roll)) {
+      ahrsFailureCountRef.current++;
+      console.error("AHRS produced invalid angles:", euler,
+        `(failure ${ahrsFailureCountRef.current}/${MAX_AHRS_FAILURES})`);
+
+      // If too many failures, reset the filter
+      if (ahrsFailureCountRef.current >= MAX_AHRS_FAILURES) {
+        console.error("AHRS filter appears stuck, resetting...");
+        madgwickRef.current = new Madgwick({
+          sampleInterval: AHRS_SAMPLE_INTERVAL,
+          beta: ahrsBetaRef.current,
+        });
+        ahrsFailureCountRef.current = 0;
+      }
+      return;
+    }
+
+    // Reset failure counter on successful update
+    ahrsFailureCountRef.current = 0;
+
+    // Convert to degrees
+    // COORDINATE SYSTEM NOTE: The AHRS library expects X=North, Y=East, Z=Down.
+    // Expo sensors may use different conventions. If heading is 180° off or
+    // pitch is inverted, adjust the signs/offsets here after device testing.
+    let heading = euler.heading * (180 / Math.PI);
+    let pitch = euler.pitch * (180 / Math.PI);
+    let roll = euler.roll * (180 / Math.PI);
+
+    // Calibration logic:
+    // - First reading: always calibrate (bootstrap), with 180° flip correction if tilted
+    // - Subsequent: only calibrate when level and interval has elapsed
+    const now = Date.now();
+    const isFirstReading = lastCalibrationTimeRef.current === 0;
+    const timeSinceCalibration = now - lastCalibrationTimeRef.current;
+    const isLevel = Math.abs(pitch) < CALIBRATION_PITCH_THRESHOLD;
+    const intervalElapsed = timeSinceCalibration >= CALIBRATION_INTERVAL_MS;
+
+    if (isFirstReading || (isLevel && intervalElapsed)) {
+      performCalibration(heading, pitch);
+    }
+
+    // Apply heading offset from compass calibration
+    heading = applyDeclination(heading, headingOffsetRef.current);
+
+    // Create new orientation
+    let newOrientation: Orientation = { heading, pitch, roll };
+
+    // Apply smoothing if we have a prior orientation
+    if (priorOrientationRef.current) {
+      newOrientation = smoothOrientation(priorOrientationRef.current, newOrientation, 0.2);
+    }
+
+    priorOrientationRef.current = newOrientation;
+    setOrientation(newOrientation);
+
+    // Update solar position if solar table is available (optional)
+    if (solarTable) {
+      const headingIndex = Math.floor(newOrientation.heading) % 360;
+      setSolarPosition(solarTable[headingIndex]);
+    }
+  };
+
+  // Load beta value from storage on mount
+  useEffect(() => {
+    (async () => {
+      const storedBeta = await loadBeta();
+      setAhrsBeta(storedBeta);
+      ahrsBetaRef.current = storedBeta;
+
+      // Reinitialize filter with loaded beta if different from default
+      if (storedBeta !== DEFAULT_BETA) {
+        madgwickRef.current = new Madgwick({
+          sampleInterval: AHRS_SAMPLE_INTERVAL,
+          beta: storedBeta,
+        });
+      }
+    })();
+  }, []);
+
+  // Handle beta parameter changes
+  const handleBetaChange = async (newBeta: number) => {
+    setAhrsBeta(newBeta);
+    ahrsBetaRef.current = newBeta;
+
+    // Persist to storage
+    await saveBeta(newBeta);
+
+    // Reinitialize the Madgwick filter with new beta
+    madgwickRef.current = new Madgwick({
+      sampleInterval: AHRS_SAMPLE_INTERVAL,
+      beta: newBeta,
+    });
+
+    // Reset failure counter since we have a fresh filter
+    ahrsFailureCountRef.current = 0;
+  };
+
+  // Double-tap gesture to open beta settings
+  const openBetaModal = () => setBetaModalVisible(true);
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .maxDuration(300)
+    .onEnd(() => {
+      runOnJS(openBetaModal)();
+    });
 
   useEffect(() => {
     (async () => {
@@ -253,6 +459,7 @@ export default function App() {
       if (locationPerms.status !== "granted") {
         setErrorMsg("Permission to access location was denied");
         console.log("Location permission denied");
+        SplashScreen.hideAsync().catch(() => {});
         return;
       }
 
@@ -260,96 +467,130 @@ export default function App() {
       const lastKnownLocation = await Location.getLastKnownPositionAsync();
       if (!lastKnownLocation) {
         setErrorMsg("Can't determine last known location");
+        SplashScreen.hideAsync().catch(() => {});
         return;
       }
       setLocation(lastKnownLocation.coords);
-      if (!solarTable) {
-        solarTable = generateSolarTable(lastKnownLocation.coords);
+
+      // Generate solar table
+      if (!solarTableRef.current) {
+        solarTableRef.current = generateSolarTable(lastKnownLocation.coords);
       }
 
-      // Start watching the device's compass heading
-      subscriptions.push(
-        await Location.watchHeadingAsync((reading) => {
-          // Only register high accuracy readings
-          if (reading.accuracy == 3) { // 3 is the highest
-            compassReading = reading;
-          }
-        })
-      );
-      DeviceMotion.setUpdateInterval(updateInterval);
+      // Request sensor permissions
+      const [gyroPerms, accelPerms, magPerms] = await Promise.all([
+        Gyroscope.requestPermissionsAsync(),
+        Accelerometer.requestPermissionsAsync(),
+        Magnetometer.requestPermissionsAsync(),
+      ]);
 
-      const motionPerms = await DeviceMotion.requestPermissionsAsync();
-      if (motionPerms.status !== "granted") {
+      if (gyroPerms.status !== "granted" ||
+          accelPerms.status !== "granted" ||
+          magPerms.status !== "granted") {
         setErrorMsg("Permission to access motion sensors was denied");
-        console.log("Device motion permission denied");
+        console.log("Sensor permissions denied");
+        SplashScreen.hideAsync().catch(() => {});
         return;
       }
-      // Start watching the device's motion
-      subscriptions.push(
-        DeviceMotion.addListener((reading) => {
-          motionReading = reading;
-          updateOrientation();
+
+      // Set update intervals for all sensors (50Hz = 20ms)
+      Gyroscope.setUpdateInterval(AHRS_SAMPLE_INTERVAL);
+      Accelerometer.setUpdateInterval(AHRS_SAMPLE_INTERVAL);
+      Magnetometer.setUpdateInterval(AHRS_SAMPLE_INTERVAL);
+
+      // Subscribe to gyroscope
+      subscriptionsRef.current.push(
+        Gyroscope.addListener((data) => {
+          gyroDataRef.current = data;
+          updateOrientationAHRS();
         })
       );
-      DeviceMotion.setUpdateInterval(updateInterval);
+
+      // Subscribe to accelerometer
+      subscriptionsRef.current.push(
+        Accelerometer.addListener((data) => {
+          accelDataRef.current = data;
+          updateOrientationAHRS();
+        })
+      );
+
+      // Subscribe to magnetometer
+      subscriptionsRef.current.push(
+        Magnetometer.addListener((data) => {
+          magDataRef.current = data;
+          updateOrientationAHRS();
+        })
+      );
     })();
 
     return () => {
-      subscriptions.forEach((sub) => {
+      subscriptionsRef.current.forEach((sub) => {
         sub.remove();
       });
+      subscriptionsRef.current = [];
     };
   }, []);
 
   return (
-    <View style={styles.container}>
-      {cameraPermission?.granted ? (
-        <CameraView
-          facing="back"
-          style={[styles.fullScreen, { zIndex: 0 }]}
-        />
-      ) : (
-        ""
-      )}
-      <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
-      <View style={[styles.container, { flex: 7 }]} />
-      <View
-        style={[
-          styles.container,
-          styles.widget,
-          {
-            flexDirection: "row",
-            flexGrow: 1,
-            alignItems: "stretch",
-          },
-        ]}
-      >
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <GestureDetector gesture={doubleTapGesture}>
         <View style={styles.container}>
-          <CompassPoint
-            heading={orientation.heading}
-            style={{ fontSize: 32, fontFamily: "Baskerville" }}
-          />
+          {cameraPermission?.granted ? (
+            <CameraView
+              facing="back"
+              style={[styles.fullScreen, { zIndex: 0 }]}
+            />
+          ) : (
+            ""
+          )}
+          <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
+          <View style={[styles.container, { flex: 7 }]} />
+          <View
+            style={[
+              styles.container,
+              styles.widget,
+              {
+                flexDirection: "row",
+                flexGrow: 1,
+                alignItems: "stretch",
+              },
+            ]}
+          >
+            <View style={styles.container}>
+              <CompassPoint
+                heading={orientation.heading}
+                style={{ fontSize: 32, fontFamily: "Baskerville" }}
+              />
+              {/*
+              <SolarTime position={solarPosition} style={{ fontSize: 32 }} />
+              <SolarElevation position={solarPosition} style={{ fontSize: 16 }} />
+              */}
+            </View>
           {/*
-          <SolarTime position={solarPosition} style={{ fontSize: 32 }} />
-          <SolarElevation position={solarPosition} style={{ fontSize: 16 }} />
+            <View style={styles.container}>
+              <Text style={{...styles.paragraph, fontSize: 16}}>
+                ↕️ {orientation.pitch.toFixed()}º
+              </Text>
+            </View>
           */}
+          </View>
+          {/*
+          <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
+            <Text style={{ ...styles.paragraph, fontSize: 16 }}>
+              {location?.latitude.toFixed(4)}ºN &nbsp;
+              {location?.longitude.toFixed(4)}ºE
+            </Text>
+          </View>
+          */}
+
+          <BetaSettingsModal
+            visible={betaModalVisible}
+            currentBeta={ahrsBeta}
+            onClose={() => setBetaModalVisible(false)}
+            onBetaChange={handleBetaChange}
+          />
         </View>
-      {/*
-        <View style={styles.container}>
-          <Text style={{...styles.paragraph, fontSize: 16}}>
-            ↕️ {orientation.pitch.toFixed()}º
-          </Text>
-        </View>
-      */}
-      </View>
-      {/*
-      <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
-        <Text style={{ ...styles.paragraph, fontSize: 16 }}>
-          {location?.latitude.toFixed(4)}ºN &nbsp;
-          {location?.longitude.toFixed(4)}ºE
-        </Text>
-      </View>
-      */}
-    </View>
+      </GestureDetector>
+    </GestureHandlerRootView>
   );
 }
