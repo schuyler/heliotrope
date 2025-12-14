@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Text, View, Dimensions, Image, Animated, StyleSheet } from "react-native";
+import { Text, View, Dimensions, Image } from "react-native";
+import * as SplashScreen from "expo-splash-screen";
 import {
   GestureHandlerRootView,
   Gesture,
@@ -42,6 +43,9 @@ LogBox.ignoreLogs([
 
 // Re-export the Orientation type for use in components
 type Orientation = AHRSOrientation;
+
+// Keep splash screen visible until calibration completes
+SplashScreen.preventAutoHideAsync();
 
 // AHRS configuration
 const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
@@ -226,10 +230,8 @@ export default function App() {
   const lastCalibrationTimeRef = useRef<number>(0);
   const calibrationInProgressRef = useRef<boolean>(false);
 
-  // Calibration overlay state and animations
-  const [isCalibrated, setIsCalibrated] = useState<boolean>(false);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const fadeAnim = useRef(new Animated.Value(1)).current;
+  // Track whether first calibration has completed
+  const isCalibrated = useRef<boolean>(false);
 
   // Initialize Madgwick filter on first render
   if (!madgwickRef.current) {
@@ -238,39 +240,6 @@ export default function App() {
       beta: ahrsBetaRef.current,
     });
   }
-
-  // Start pulse animation on mount, fade out when calibrated
-  useEffect(() => {
-    // Pulse animation loop
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 0.6,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    pulse.start();
-
-    return () => pulse.stop();
-  }, []);
-
-  // Fade out overlay when calibrated
-  useEffect(() => {
-    if (isCalibrated) {
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 500,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [isCalibrated]);
 
   /**
    * Performs compass calibration by comparing AHRS heading to iOS compass.
@@ -302,9 +271,10 @@ export default function App() {
         headingOffsetRef.current = offset;
         lastCalibrationTimeRef.current = Date.now();
 
-        // Mark as calibrated on first successful calibration (triggers fade out)
-        if (!isCalibrated) {
-          setIsCalibrated(true);
+        // Hide splash screen on first successful calibration
+        if (!isCalibrated.current) {
+          isCalibrated.current = true;
+          SplashScreen.hideAsync();
         }
       }
     } catch (e) {
