@@ -48,6 +48,10 @@ type Orientation = AHRSOrientation;
 // AHRS configuration
 const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
 
+// Compass calibration configuration
+const CALIBRATION_INTERVAL_MS = 30000; // Recalibrate every 30 seconds
+const CALIBRATION_PITCH_THRESHOLD = 15; // Only calibrate when |pitch| < 15°
+
 function padTime(n: number | undefined) {
   if (n == undefined) {
     return "--";
@@ -220,6 +224,11 @@ export default function App() {
   const [betaModalVisible, setBetaModalVisible] = useState<boolean>(false);
   const ahrsBetaRef = useRef<number>(DEFAULT_BETA);
 
+  // Compass calibration (heading offset from iOS compass)
+  const headingOffsetRef = useRef<number>(0);
+  const lastCalibrationTimeRef = useRef<number>(0);
+  const calibrationInProgressRef = useRef<boolean>(false);
+
   // Initialize Madgwick filter on first render
   if (!madgwickRef.current) {
     madgwickRef.current = new Madgwick({
@@ -227,6 +236,33 @@ export default function App() {
       beta: ahrsBetaRef.current,
     });
   }
+
+  /**
+   * Performs compass calibration by comparing AHRS heading to iOS compass.
+   * Called when pitch is level and calibration interval has elapsed.
+   */
+  const performCalibration = async (ahrsHeading: number) => {
+    if (calibrationInProgressRef.current) return;
+    calibrationInProgressRef.current = true;
+
+    try {
+      const iosHeading = await Location.getHeadingAsync();
+      if (iosHeading && Number.isFinite(iosHeading.trueHeading)) {
+        // Calculate offset: what we need to add to AHRS to match iOS
+        let offset = iosHeading.trueHeading - ahrsHeading;
+        // Normalize to [-180, 180]
+        while (offset > 180) offset -= 360;
+        while (offset < -180) offset += 360;
+
+        headingOffsetRef.current = offset;
+        lastCalibrationTimeRef.current = Date.now();
+      }
+    } catch (e) {
+      console.warn("Compass calibration failed:", e);
+    } finally {
+      calibrationInProgressRef.current = false;
+    }
+  };
 
   /**
    * Updates orientation using AHRS sensor fusion.
@@ -296,6 +332,17 @@ export default function App() {
 
     // Apply magnetic declination for true heading
     heading = applyDeclination(heading, declinationRef.current);
+
+    // Check if we should recalibrate (pitch is level and interval has elapsed)
+    const now = Date.now();
+    const timeSinceCalibration = now - lastCalibrationTimeRef.current;
+    if (Math.abs(pitch) < CALIBRATION_PITCH_THRESHOLD &&
+        timeSinceCalibration >= CALIBRATION_INTERVAL_MS) {
+      performCalibration(heading);
+    }
+
+    // Apply heading offset from compass calibration
+    heading = applyDeclination(heading, headingOffsetRef.current);
 
     // Create new orientation
     let newOrientation: Orientation = { heading, pitch, roll };
