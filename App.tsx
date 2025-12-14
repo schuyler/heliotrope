@@ -19,8 +19,6 @@ import * as Location from "expo-location";
 import { Gyroscope, Accelerometer, Magnetometer } from "expo-sensors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import Madgwick from "ahrs";
-// @ts-ignore - no types available for geomagnetism
-import geomagnetism from "geomagnetism";
 
 import { styles } from "./style";
 import { generateSolarTable, SolarTable, SolarPosition } from "./solar";
@@ -204,7 +202,6 @@ export default function App() {
   // Refs for mutable values that persist across renders
   const subscriptionsRef = useRef<{ remove: () => void }[]>([]);
   const solarTableRef = useRef<SolarTable | null>(null);
-  const declinationRef = useRef<number>(0);
   const priorOrientationRef = useRef<Orientation | null>(null);
 
   // Sensor data refs (updated by sensor callbacks)
@@ -330,9 +327,6 @@ export default function App() {
     let pitch = euler.pitch * (180 / Math.PI);
     let roll = euler.roll * (180 / Math.PI);
 
-    // Apply magnetic declination for true heading
-    heading = applyDeclination(heading, declinationRef.current);
-
     // Check if we should recalibrate (pitch is level and interval has elapsed)
     const now = Date.now();
     const timeSinceCalibration = now - lastCalibrationTimeRef.current;
@@ -428,18 +422,6 @@ export default function App() {
       // Generate solar table
       if (!solarTableRef.current) {
         solarTableRef.current = generateSolarTable(lastKnownLocation.coords);
-      }
-
-      // Calculate magnetic declination for true north correction
-      try {
-        const geoMag = geomagnetism.model().point([
-          lastKnownLocation.coords.latitude,
-          lastKnownLocation.coords.longitude,
-        ]);
-        declinationRef.current = geoMag.decl; // Degrees
-      } catch (e) {
-        console.warn("Failed to calculate magnetic declination:", e);
-        declinationRef.current = 0;
       }
 
       // Request sensor permissions
