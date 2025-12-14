@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Text, View, Dimensions, Image } from "react-native";
+import {
+  GestureHandlerRootView,
+  Gesture,
+  GestureDetector,
+} from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 
 import Svg, {
   Circle,
@@ -26,6 +32,8 @@ import {
   hasAllSensorReadings,
   isValidSensorReading,
 } from "./ahrs-orientation";
+import { BetaSettingsModal } from "./BetaSettingsModal";
+import { loadBeta, saveBeta, DEFAULT_BETA } from "./beta-storage";
 
 import { LogBox } from "react-native";
 
@@ -39,7 +47,6 @@ type Orientation = AHRSOrientation;
 
 // AHRS configuration
 const AHRS_SAMPLE_INTERVAL = 20; // 50Hz update rate
-const AHRS_BETA = 0.1; // Madgwick filter gain (tune between 0.05-0.15)
 
 function padTime(n: number | undefined) {
   if (n == undefined) {
@@ -208,11 +215,16 @@ export default function App() {
   const ahrsFailureCountRef = useRef<number>(0);
   const MAX_AHRS_FAILURES = 10;
 
+  // Beta parameter state and modal
+  const [ahrsBeta, setAhrsBeta] = useState<number>(DEFAULT_BETA);
+  const [betaModalVisible, setBetaModalVisible] = useState<boolean>(false);
+  const ahrsBetaRef = useRef<number>(DEFAULT_BETA);
+
   // Initialize Madgwick filter on first render
   if (!madgwickRef.current) {
     madgwickRef.current = new Madgwick({
       sampleInterval: AHRS_SAMPLE_INTERVAL,
-      beta: AHRS_BETA,
+      beta: ahrsBetaRef.current,
     });
   }
 
@@ -264,7 +276,7 @@ export default function App() {
         console.error("AHRS filter appears stuck, resetting...");
         madgwickRef.current = new Madgwick({
           sampleInterval: AHRS_SAMPLE_INTERVAL,
-          beta: AHRS_BETA,
+          beta: ahrsBetaRef.current,
         });
         ahrsFailureCountRef.current = 0;
       }
@@ -302,6 +314,50 @@ export default function App() {
       setSolarPosition(solarTable[headingIndex]);
     }
   };
+
+  // Load beta value from storage on mount
+  useEffect(() => {
+    (async () => {
+      const storedBeta = await loadBeta();
+      setAhrsBeta(storedBeta);
+      ahrsBetaRef.current = storedBeta;
+
+      // Reinitialize filter with loaded beta if different from default
+      if (storedBeta !== DEFAULT_BETA) {
+        madgwickRef.current = new Madgwick({
+          sampleInterval: AHRS_SAMPLE_INTERVAL,
+          beta: storedBeta,
+        });
+      }
+    })();
+  }, []);
+
+  // Handle beta parameter changes
+  const handleBetaChange = async (newBeta: number) => {
+    setAhrsBeta(newBeta);
+    ahrsBetaRef.current = newBeta;
+
+    // Persist to storage
+    await saveBeta(newBeta);
+
+    // Reinitialize the Madgwick filter with new beta
+    madgwickRef.current = new Madgwick({
+      sampleInterval: AHRS_SAMPLE_INTERVAL,
+      beta: newBeta,
+    });
+
+    // Reset failure counter since we have a fresh filter
+    ahrsFailureCountRef.current = 0;
+  };
+
+  // Double-tap gesture to open beta settings
+  const openBetaModal = () => setBetaModalVisible(true);
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .maxDuration(300)
+    .onEnd(() => {
+      runOnJS(openBetaModal)();
+    });
 
   useEffect(() => {
     (async () => {
@@ -393,54 +449,65 @@ export default function App() {
   }, []);
 
   return (
-    <View style={styles.container}>
-      {cameraPermission?.granted ? (
-        <CameraView
-          facing="back"
-          style={[styles.fullScreen, { zIndex: 0 }]}
-        />
-      ) : (
-        ""
-      )}
-      <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
-      <View style={[styles.container, { flex: 7 }]} />
-      <View
-        style={[
-          styles.container,
-          styles.widget,
-          {
-            flexDirection: "row",
-            flexGrow: 1,
-            alignItems: "stretch",
-          },
-        ]}
-      >
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <GestureDetector gesture={doubleTapGesture}>
         <View style={styles.container}>
-          <CompassPoint
-            heading={orientation.heading}
-            style={{ fontSize: 32, fontFamily: "Baskerville" }}
-          />
+          {cameraPermission?.granted ? (
+            <CameraView
+              facing="back"
+              style={[styles.fullScreen, { zIndex: 0 }]}
+            />
+          ) : (
+            ""
+          )}
+          <HeadUpDisplay orientation={orientation} solarPosition={solarPosition} />
+          <View style={[styles.container, { flex: 7 }]} />
+          <View
+            style={[
+              styles.container,
+              styles.widget,
+              {
+                flexDirection: "row",
+                flexGrow: 1,
+                alignItems: "stretch",
+              },
+            ]}
+          >
+            <View style={styles.container}>
+              <CompassPoint
+                heading={orientation.heading}
+                style={{ fontSize: 32, fontFamily: "Baskerville" }}
+              />
+              {/*
+              <SolarTime position={solarPosition} style={{ fontSize: 32 }} />
+              <SolarElevation position={solarPosition} style={{ fontSize: 16 }} />
+              */}
+            </View>
           {/*
-          <SolarTime position={solarPosition} style={{ fontSize: 32 }} />
-          <SolarElevation position={solarPosition} style={{ fontSize: 16 }} />
+            <View style={styles.container}>
+              <Text style={{...styles.paragraph, fontSize: 16}}>
+                ↕️ {orientation.pitch.toFixed()}º
+              </Text>
+            </View>
           */}
+          </View>
+          {/*
+          <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
+            <Text style={{ ...styles.paragraph, fontSize: 16 }}>
+              {location?.latitude.toFixed(4)}ºN &nbsp;
+              {location?.longitude.toFixed(4)}ºE
+            </Text>
+          </View>
+          */}
+
+          <BetaSettingsModal
+            visible={betaModalVisible}
+            currentBeta={ahrsBeta}
+            onClose={() => setBetaModalVisible(false)}
+            onBetaChange={handleBetaChange}
+          />
         </View>
-      {/*
-        <View style={styles.container}>
-          <Text style={{...styles.paragraph, fontSize: 16}}>
-            ↕️ {orientation.pitch.toFixed()}º
-          </Text>
-        </View>
-      */}
-      </View>
-      {/*
-      <View style={[styles.container, styles.widget, { alignSelf: "stretch" }]}>
-        <Text style={{ ...styles.paragraph, fontSize: 16 }}>
-          {location?.latitude.toFixed(4)}ºN &nbsp;
-          {location?.longitude.toFixed(4)}ºE
-        </Text>
-      </View>
-      */}
-    </View>
+      </GestureDetector>
+    </GestureHandlerRootView>
   );
 }
